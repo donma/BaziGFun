@@ -339,7 +339,7 @@ Tests      64 passed (64)
 
 ### 2. 陀螺儀實測（`npm run test:sensor`，真實 Chrome／Edge）
 
-透過 DevTools「Sensors → Orientation」同一條協定（CDP `DeviceOrientation.setDeviceOrientationOverride`），讓**瀏覽器自己送出真正的 `deviceorientation` 事件**，驗證 事件 → 姿態幾何 → 相機朝向 → 八宅吉凶 → 畫面 全鏈路（人物：1991 年生女性＝乾六命）。16 項全數通過：
+透過 DevTools「Sensors → Orientation」同一條協定（CDP `DeviceOrientation.setDeviceOrientationOverride`），讓**瀏覽器自己送出真正的 `deviceorientation` 事件**，驗證 事件 → 姿態幾何 → 相機朝向 → 八宅吉凶 → 畫面 全鏈路（人物：1991 年生女性＝乾六命）。17 項全數通過：
 
 | 姿態 | 畫面結果 |
 |---|---|
