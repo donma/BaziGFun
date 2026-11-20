@@ -4,16 +4,18 @@
  */
 
 export interface OrientationSample {
-  /** 指南針航向（若有可靠語義），0–360 */
-  heading: number | null;
+  /** iOS `webkitCompassHeading`（磁北，度）；不存在時為 null */
+  webkitHeading: number | null;
+  /** `webkitCompassAccuracy`（度，越小越準；負值＝無效） */
+  webkitAccuracy: number | null;
   alpha: number | null;
   beta: number | null;
   gamma: number | null;
-  /** webkitCompassHeading 原始值（存在時） */
-  webkitHeading: number | null;
-  /** webkitCompassAccuracy 原始值（存在時） */
-  webkitAccuracy: number | null;
-  /** 螢幕方向角（0/90/180/270） */
+  /** 此事件的 alpha/beta/gamma 是否為相對地球的絕對方位（deviceorientationabsolute 或 event.absolute） */
+  absolute: boolean;
+  /** 事件來源 */
+  eventType: "deviceorientation" | "deviceorientationabsolute";
+  /** 螢幕方向角（0/90/180/270），僅供診斷；相機朝向換算不依賴它 */
   screenOrientation: number;
   timestamp: number;
 }
@@ -22,74 +24,103 @@ export type SensorPermission = "granted" | "denied" | "prompt" | "unsupported";
 
 export interface SensorCapabilities {
   hasDeviceOrientation: boolean;
+  hasAbsoluteEvent: boolean; // Chrome Android 的 deviceorientationabsolute
   hasRequestPermission: boolean; // iOS 13+ DeviceOrientationEvent.requestPermission
-  hasWebkitCompassHeading: boolean; // 需實際事件後才可確認；此為 API 靜態偵測
   isIOS: boolean;
   isSecureContext: boolean;
 }
 
+type DOEStatic = {
+  requestPermission?: () => Promise<"granted" | "denied">;
+};
+
+function doeStatic(): DOEStatic | undefined {
+  return (window as unknown as { DeviceOrientationEvent?: DOEStatic }).DeviceOrientationEvent;
+}
+
 export function detectCapabilities(): SensorCapabilities {
-  const d = window as unknown as Record<string, unknown>;
-  const DeviceOrientationEvent = d.DeviceOrientationEvent as
-    | (typeof globalThis & { requestPermission?: () => Promise<"granted" | "denied"> })
-    | undefined;
+  const DOE = doeStatic();
   return {
-    hasDeviceOrientation: typeof DeviceOrientationEvent !== "undefined",
-    hasRequestPermission:
-      typeof DeviceOrientationEvent !== "undefined" &&
-      typeof DeviceOrientationEvent.requestPermission === "function",
-    hasWebkitCompassHeading: false, // 僅能在事件中確認
-    isIOS: /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform ?? "")),
+    hasDeviceOrientation: typeof DOE !== "undefined",
+    hasAbsoluteEvent: "ondeviceorientationabsolute" in window,
+    hasRequestPermission: typeof DOE !== "undefined" && typeof DOE.requestPermission === "function",
+    isIOS:
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform ?? "")),
     isSecureContext: window.isSecureContext,
   };
 }
 
-/** 請求方向感測器權限（iOS 13+ 需手勢中呼叫） */
+/** 請求方向感測器權限（iOS 13+ 必須在使用者手勢中呼叫） */
 export async function requestOrientationPermission(): Promise<SensorPermission> {
-  const d = window as unknown as Record<string, unknown>;
-  const DeviceOrientationEvent = d.DeviceOrientationEvent as
-    | (typeof globalThis & { requestPermission?: () => Promise<"granted" | "denied"> })
-    | undefined;
-  if (typeof DeviceOrientationEvent === "undefined") return "unsupported";
-  if (typeof DeviceOrientationEvent.requestPermission !== "function") {
-    // 非 iOS 13+：Android/桌面直接嘗試監聽
+  const DOE = doeStatic();
+  if (typeof DOE === "undefined") return "unsupported";
+  if (typeof DOE.requestPermission !== "function") {
+    // 非 iOS 13+：不需要權限，直接監聽
     return "granted";
   }
   try {
-    const res = await DeviceOrientationEvent.requestPermission();
+    const res = await DOE.requestPermission();
     return res === "granted" ? "granted" : "denied";
   } catch {
     return "denied";
   }
 }
 
+function screenAngle(): number {
+  if (typeof screen !== "undefined" && screen.orientation && typeof screen.orientation.angle === "number") {
+    return screen.orientation.angle;
+  }
+  const legacy = (window as unknown as { orientation?: number }).orientation;
+  return typeof legacy === "number" ? legacy : 0;
+}
+
+function num(v: number | null | undefined): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 /** 解讀 DeviceOrientationEvent → 樣本 */
-export function parseOrientationEvent(e: DeviceOrientationEvent): OrientationSample {
+export function parseOrientationEvent(e: DeviceOrientationEvent, eventType: OrientationSample["eventType"]): OrientationSample {
   const w = e as DeviceOrientationEvent & {
     webkitCompassHeading?: number;
     webkitCompassAccuracy?: number;
   };
   return {
-    heading: typeof w.webkitCompassHeading === "number" && Number.isFinite(w.webkitCompassHeading)
-      ? w.webkitCompassHeading
-      : null,
-    alpha: Number.isFinite(e.alpha ?? NaN) ? e.alpha : null,
-    beta: Number.isFinite(e.beta ?? NaN) ? e.beta : null,
-    gamma: Number.isFinite(e.gamma ?? NaN) ? e.gamma : null,
-    webkitHeading: typeof w.webkitCompassHeading === "number" ? w.webkitCompassHeading : null,
-    webkitAccuracy: typeof w.webkitCompassAccuracy === "number" ? w.webkitCompassAccuracy : null,
-    screenOrientation: typeof screen.orientation === "object" ? screen.orientation.angle : (window.orientation as number) ?? 0,
+    webkitHeading: num(w.webkitCompassHeading),
+    webkitAccuracy: num(w.webkitCompassAccuracy),
+    alpha: num(e.alpha),
+    beta: num(e.beta),
+    gamma: num(e.gamma),
+    absolute: eventType === "deviceorientationabsolute" || e.absolute === true,
+    eventType,
+    screenOrientation: screenAngle(),
     timestamp: Date.now(),
   };
 }
 
-/** 監聽器訂閱 */
+/**
+ * 訂閱方向事件。若瀏覽器提供 deviceorientationabsolute（Chrome Android），
+ * 一併訂閱；同時有絕對事件流時忽略相對事件，避免兩種語義互相覆蓋。
+ */
 export function subscribeOrientation(cb: (s: OrientationSample) => void): () => void {
-  const handler = (e: DeviceOrientationEvent) => {
-    const absolute = (e as DeviceOrientationEvent & { absolute?: boolean }).absolute;
-    void absolute;
-    cb(parseOrientationEvent(e));
+  let lastAbsoluteTs = 0;
+
+  const onRelative = (e: DeviceOrientationEvent) => {
+    const s = parseOrientationEvent(e, "deviceorientation");
+    // iOS：webkitCompassHeading 仍來自此事件，不可忽略
+    if (!s.absolute && s.webkitHeading === null && Date.now() - lastAbsoluteTs < 1500) return;
+    cb(s);
   };
-  window.addEventListener("deviceorientation", handler, true);
-  return () => window.removeEventListener("deviceorientation", handler, true);
+  const onAbsolute = (e: DeviceOrientationEvent) => {
+    lastAbsoluteTs = Date.now();
+    cb(parseOrientationEvent(e, "deviceorientationabsolute"));
+  };
+
+  window.addEventListener("deviceorientation", onRelative, true);
+  const hasAbs = "ondeviceorientationabsolute" in window;
+  if (hasAbs) window.addEventListener("deviceorientationabsolute", onAbsolute as EventListener, true);
+  return () => {
+    window.removeEventListener("deviceorientation", onRelative, true);
+    if (hasAbs) window.removeEventListener("deviceorientationabsolute", onAbsolute as EventListener, true);
+  };
 }

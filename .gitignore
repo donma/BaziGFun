@@ -11,3 +11,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 coverage/
+
+# 字型來源快取（npm run fonts 會自動下載）
+scripts/.cache/

@@ -1,0 +1,880 @@
+/**
+ * 即時相機羅盤主畫面。
+ * 背景永遠是 getUserMedia 的即時畫面（.scene-video）；沒有任何靜態背景圖。
+ * 因為實景可能很亮或很暗，頂／底以漸層遮罩墊底，卡片維持高不透明度，確保字讀得清楚。
+ */
+
+.scene {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #241c0f;
+  color: var(--c-cream);
+}
+
+.scene-media {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.scene-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 相機尚未啟動時的暖色暗底（不是實景，僅避免一片死黑） */
+.scene-fallback {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 80% at 50% 38%, #8c7852 0%, #5f5039 55%, #3a2f20 100%);
+}
+
+.scene-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.scene-scrim.top {
+  top: 0;
+  height: calc(var(--sat) + 170px);
+  background: linear-gradient(180deg, rgba(16, 12, 5, 0.62) 0%, rgba(16, 12, 5, 0.28) 55%, rgba(16, 12, 5, 0) 100%);
+}
+
+.scene-scrim.bottom {
+  bottom: 0;
+  height: calc(var(--sab) + 250px);
+  background: linear-gradient(0deg, rgba(16, 12, 5, 0.66) 0%, rgba(16, 12, 5, 0.3) 55%, rgba(16, 12, 5, 0) 100%);
+}
+
+.layout-wide {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.scene-overlay {
+  position: absolute;
+  inset: 0;
+  margin-inline: auto;
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: calc(var(--sat) + 2px) calc(var(--sar) + 12px) calc(var(--sab) + 8px) calc(var(--sal) + 12px);
+  overflow: hidden;
+}
+
+.side-panel {
+  display: none;
+}
+
+/* ---------- 品牌列 ---------- */
+
+.brand-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  /* 依「品牌列自己的寬度」調整標題（橫式右欄、Duo 上半螢幕都比螢幕窄很多） */
+  container-type: inline-size;
+}
+
+.icon-btn {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fbf1d8;
+  cursor: pointer;
+}
+
+.icon-btn svg {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+
+.brand-title {
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 17px; /* 不支援容器單位的舊瀏覽器用這個 */
+  font-size: clamp(15px, 5.4cqw, 19px);
+  letter-spacing: 0.4px;
+  color: #f8e9c4;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 10px rgba(0, 0, 0, 0.28);
+}
+
+/* 品牌列寬度不足（窄螢幕、橫式右欄、Duo 上半螢幕）：先捨雲紋；漢堡鈕維持 44px 不被擠扁 */
+@container (max-width: 349px) {
+  .brand-title .ornament {
+    display: none;
+  }
+}
+
+.brand-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.ornament {
+  color: #e3c982;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+.seal {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 25px;
+  border-radius: 4px;
+  background: #b3281e;
+  color: #fff4e0;
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 9.5px;
+  line-height: 1.05;
+  text-shadow: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 235, 200, 0.35);
+}
+
+/* ---------- 副標膠囊 ---------- */
+
+.scheme-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.scheme-pill {
+  padding: 3px 20px 4px;
+  border-radius: 999px;
+  border: 1px solid #d9b86a;
+  background: linear-gradient(180deg, #3b7a44, #2a5a33);
+  color: #f8ecd0;
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 14.5px;
+  letter-spacing: 1px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+/* ---------- 人物命卦卡 ---------- */
+
+.person-card {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(201, 164, 92, 0.75);
+  background: rgba(250, 245, 232, 0.92);
+  color: #3a3020;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  /* 依「卡片自己的寬度」調整字級與元素：橫式右欄、Duo 半螢幕都比手機直式窄 */
+  container-type: inline-size;
+}
+
+.kua-glyph {
+  flex: 0 0 auto;
+}
+
+.person-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.person-line1 {
+  display: flex;
+  flex-wrap: wrap; /* 實在放不下時，命卦文字整段換到下一行，而不是把人名擠扁 */
+  align-items: baseline;
+  font-size: 12.5px;
+  color: #5a4d33;
+}
+
+/* 人名不被壓縮；太長才省略 */
+.person-name {
+  flex: 0 0 auto;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15.5px;
+  color: #2c2417;
+}
+
+.kua-line {
+  white-space: nowrap;
+}
+
+.person-line2 {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #6b5d3f;
+}
+
+.sep {
+  margin: 0 3px;
+  color: #b9a574;
+}
+
+.warn-mark {
+  margin-left: 3px;
+  color: #b06a10;
+}
+
+.detail-pill {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(176, 141, 79, 0.75);
+  background: rgba(227, 201, 130, 0.38);
+  color: #6f5316;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+@container (max-width: 359px) {
+  .kua-glyph {
+    width: 28px;
+    height: 25px;
+  }
+  .person-name {
+    font-size: 14.5px;
+  }
+  .person-line1 {
+    font-size: 11.5px;
+  }
+  .person-line2 {
+    font-size: 11px;
+  }
+  .detail-pill {
+    padding: 5px 9px;
+    font-size: 11.5px;
+  }
+}
+
+@container (max-width: 330px) {
+  .kua-glyph {
+    display: none;
+  }
+}
+
+/* ---------- 狀態列 ---------- */
+
+.status-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(227, 201, 130, 0.5);
+  background: rgba(28, 22, 10, 0.62);
+  color: #fbf1d8;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.chip.good {
+  background: rgba(36, 98, 44, 0.78);
+  border-color: rgba(168, 224, 156, 0.55);
+}
+
+.chip.warn {
+  background: rgba(124, 90, 18, 0.8);
+  border-color: rgba(255, 216, 130, 0.6);
+  color: #ffeabd;
+}
+
+.chip.bad {
+  background: rgba(142, 44, 34, 0.8);
+  border-color: rgba(255, 176, 156, 0.55);
+}
+
+.chip-btn {
+  position: relative;
+  cursor: pointer;
+}
+
+/* 小膠囊的視覺高度只有 22px，把可點擊範圍在垂直方向擴到 44px（只擴垂直，不增加水平捲動寬度） */
+.chip-btn::after,
+.detail-pill::after,
+.nudge::after {
+  content: "";
+  position: absolute;
+  inset: -11px 0;
+}
+
+.detail-pill::after {
+  inset: -8px 0;
+}
+
+.nudge::after {
+  inset: -6px 0;
+}
+
+/* ---------- 羅盤 ---------- */
+
+.compass-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  margin: 0 -4px;
+}
+
+/* 不加 filter／陰影：避免整張 SVG 離屏重繪造成文字變軟、旋轉時掉幀 */
+.compass-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.compass-svg [role="button"]:focus-visible {
+  outline: none;
+  stroke: #fff3cf;
+  stroke-width: 3;
+}
+
+.compass-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #fbf1d8;
+  font-size: 14px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- 底部：目前朝向卡 ---------- */
+
+.bottombar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.heading-card {
+  padding: 10px 14px 11px;
+  border-radius: 16px;
+  border: 1px solid rgba(201, 164, 92, 0.75);
+  background: rgba(250, 245, 232, 0.92);
+  color: #3a3020;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  /* 依卡片自己的寬度縮放（橫式右欄、Duo 半螢幕的卡片比手機直式窄） */
+  container-type: inline-size;
+}
+
+.heading-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.heading-icon {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px solid #c9a45c;
+  background: rgba(201, 164, 92, 0.14);
+  color: #a9832f;
+}
+
+.heading-text {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.heading-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  font-size: 11.5px;
+  color: #7a6a48;
+}
+
+.tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(201, 164, 92, 0.3);
+  color: #7a5a10;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.tag.bad {
+  background: rgba(184, 64, 47, 0.18);
+  color: #9a2f22;
+}
+
+.heading-big {
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1.15;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.heading-big .dir {
+  margin-left: 8px;
+}
+
+.heading-divider {
+  flex: 0 0 1px;
+  align-self: stretch;
+  margin: 2px 0;
+  background: linear-gradient(180deg, transparent, rgba(176, 141, 79, 0.6), transparent);
+}
+
+.star-pill {
+  flex: 1 1 0;
+  min-width: min-content; /* 膠囊文字不得被壓到溢出 */
+  padding: 7px 10px;
+  border-radius: 999px;
+  text-align: center;
+  white-space: nowrap;
+  color: #fff;
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 17px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.star-pill .pill-sub {
+  margin-left: 2px;
+  font-size: 13px;
+}
+
+.star-pill.good {
+  background: linear-gradient(180deg, var(--c-good-strong), var(--c-good-deep));
+}
+
+.star-pill.bad {
+  background: linear-gradient(180deg, #c9493a, var(--c-bad-deep));
+}
+
+.star-pill.muted {
+  background: linear-gradient(180deg, #8d8573, #6f6857);
+}
+
+.star-pill.is-dim {
+  opacity: 0.55;
+}
+
+.heading-desc {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(176, 141, 79, 0.42);
+  font-size: 12px;
+  line-height: 1.55;
+  color: #5a4d33;
+  /* 折行時左右均衡，避免最後一行只剩一個字 */
+  text-wrap: balance;
+}
+
+.heading-warn {
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: #9a5a08;
+}
+
+.heading-warn.bad {
+  color: #a3342a;
+}
+
+.cta-btn {
+  margin-top: 7px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #3b7a44, #2a5a33);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* 朝向卡比手機直式窄時（橫式右欄、Duo 半螢幕）：先收掉羅盤小圖示並縮小字級，確保文字不溢出 */
+@container (max-width: 339px) {
+  .heading-icon {
+    display: none;
+  }
+  .heading-main {
+    gap: 10px;
+  }
+  .heading-big {
+    font-size: 22px;
+  }
+  .heading-big .dir {
+    margin-left: 6px;
+  }
+  .star-pill {
+    padding: 6px 8px;
+    font-size: 15px;
+  }
+  .star-pill .pill-sub {
+    font-size: 12px;
+  }
+}
+
+@container (max-width: 289px) {
+  .heading-big {
+    font-size: 20px;
+  }
+  .star-pill {
+    padding: 5px 6px;
+    font-size: 14px;
+  }
+  .star-pill .pill-sub {
+    font-size: 11px;
+  }
+}
+
+/* ---------- 手動羅盤 ---------- */
+
+.manual-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(227, 201, 130, 0.55);
+  background: rgba(28, 22, 10, 0.66);
+  color: #fbf1d8;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.manual-bar input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: #e3c982;
+}
+
+.nudge {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(227, 201, 130, 0.6);
+  border-radius: 999px;
+  background: rgba(227, 201, 130, 0.14);
+  color: #fbf1d8;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ---------- 四顆圓形操作鈕 ---------- */
+
+.action-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.action-btn {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #f8ecd0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  cursor: pointer;
+}
+
+.action-circle {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.6px solid #c9a45c;
+  background: rgba(28, 22, 10, 0.58);
+  color: #e8cd8a;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.42), inset 0 0 0 3px rgba(28, 22, 10, 0.28);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: transform 0.08s ease;
+}
+
+.action-btn:active .action-circle {
+  transform: scale(0.94);
+}
+
+.action-btn.accent .action-circle {
+  border-color: #f0d080;
+  color: #ffe7a8;
+  background: radial-gradient(circle at 50% 35%, rgba(240, 208, 128, 0.38), rgba(28, 22, 10, 0.58));
+  box-shadow: 0 0 14px rgba(240, 208, 128, 0.55), 0 2px 10px rgba(0, 0, 0, 0.42);
+}
+
+.action-btn.is-on .action-circle {
+  border-color: #f0d080;
+  background: #d8b45e;
+  color: #2a2010;
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- 橫式手機（短螢幕）：左羅盤、右資訊 ----------
+   同一套版面也用在「上下雙螢幕」摺疊狀態的上半螢幕（約 720×540）。 */
+
+@media (orientation: landscape) and (max-height: 600px), (vertical-viewport-segments: 2) {
+  .scene-overlay {
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 46%, 420px);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+    column-gap: 14px;
+    row-gap: 6px;
+    padding: calc(var(--sat) + 2px) calc(var(--sar) + 14px) calc(var(--sab) + 6px) calc(var(--sal) + 14px);
+  }
+
+  .compass-wrap {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    margin: 0;
+  }
+
+  .brand-bar,
+  .scheme-row,
+  .person-card,
+  .status-strip,
+  .bottombar {
+    grid-column: 2;
+  }
+
+  .brand-bar {
+    grid-row: 1;
+    height: 38px;
+  }
+  .scheme-row {
+    grid-row: 2;
+  }
+  .person-card {
+    grid-row: 3;
+  }
+  .status-strip {
+    grid-row: 4;
+  }
+  .bottombar {
+    grid-row: 6;
+    gap: 6px;
+  }
+
+  .heading-desc {
+    display: none;
+  }
+
+  .action-circle {
+    width: 44px;
+    height: 44px;
+  }
+
+  .scene-scrim.top {
+    height: 90px;
+  }
+}
+
+/* 更矮的橫式（≤420px 高，例如 640×360）：省掉裝飾性的副標列，騰出空間給手動微調列 */
+@media (orientation: landscape) and (max-height: 420px) {
+  .scene-overlay {
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  }
+  .scheme-row {
+    display: none;
+  }
+  .brand-bar {
+    height: 34px;
+  }
+  .person-card {
+    grid-row: 2;
+  }
+  .status-strip {
+    grid-row: 3;
+  }
+  .bottombar {
+    grid-row: 5;
+  }
+}
+
+/* ---------- 寬螢幕：左實景羅盤、右常駐分析面板 ----------
+   條件：寬度 ≥920 且高度夠（>600），或寬度非常寬（≥1140：連短螢幕也放得下橫式資訊欄＋側欄）。
+   寬度 920–1139 的短螢幕（例如 iPhone Pro Max 橫式 932×430）改用底部抽屜，否則羅盤會被擠到只剩幾 px。
+   ※ 此條件必須與 src/app/layout.ts 的 SIDE_PANEL_QUERY 保持一致。 */
+
+@media (min-width: 920px) and (min-height: 601px), (min-width: 1140px) {
+  .layout-wide {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
+    gap: 14px;
+    padding: calc(var(--sat) + 12px) calc(var(--sar) + 14px) calc(var(--sab) + 12px) calc(var(--sal) + 14px);
+  }
+
+  .scene-overlay {
+    position: relative;
+    inset: auto;
+    height: 100%;
+  }
+
+  .side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px;
+    color: var(--c-ink);
+  }
+}
+
+/* ---------- 摺疊雙螢幕（CSS Viewport Segments）----------
+   內容不跨鉸鏈：一個螢幕放相機實景＋羅盤，另一個螢幕放分析面板。
+   不綁定裝置型號——任何回報兩個 viewport segment 的裝置（Surface Duo 等）都適用；
+   不支援此媒體特徵的瀏覽器會落回上面的一般寬螢幕規則。 */
+
+@media (horizontal-viewport-segments: 2) {
+  /* 左右兩個螢幕（鉸鏈垂直）：左＝相機＋羅盤，右＝分析面板 */
+  :root {
+    --seg-pad-right: calc(100vw - env(viewport-segment-right 0 0));
+  }
+
+  .layout-wide {
+    display: grid;
+    grid-template-columns:
+      env(viewport-segment-width 0 0)
+      calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0))
+      minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+  }
+
+  .scene-overlay {
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: 100%;
+  }
+
+  .side-panel {
+    grid-column: 3;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    margin: calc(var(--sat) + 12px) 12px calc(var(--sab) + 12px) 12px;
+    padding: 16px;
+    color: var(--c-ink);
+  }
+}
+
+@media (vertical-viewport-segments: 2) {
+  /* 上下兩個螢幕（鉸鏈水平）：上＝相機＋羅盤（橫式緊湊版面），下＝分析面板 */
+  :root {
+    --seg-pad-bottom: calc(100vh - env(viewport-segment-bottom 0 0));
+  }
+
+  .layout-wide {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows:
+      env(viewport-segment-height 0 0)
+      calc(env(viewport-segment-top 0 1) - env(viewport-segment-bottom 0 0))
+      minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+  }
+
+  .scene-overlay {
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: 100%;
+  }
+
+  .side-panel {
+    grid-column: 1;
+    grid-row: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 12px calc(var(--sar) + 12px) calc(var(--sab) + 12px) calc(var(--sal) + 12px);
+    padding: 16px;
+    color: var(--c-ink);
+  }
+}

@@ -17,8 +17,8 @@ export default defineConfig({
         lang: "zh-Hant",
         display: "standalone",
         orientation: "any",
-        theme_color: "#f6f1e7",
-        background_color: "#f6f1e7",
+        theme_color: "#241c0f",
+        background_color: "#241c0f",
         start_url: "/BaziGFun/",
         scope: "/BaziGFun/",
         icons: [
@@ -37,5 +37,12 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // 版面同步測試需要讀到 CSS 原文（預設 Vitest 會把 CSS 換成空字串）
+    css: { include: [/\.css\?raw$/] },
+  },
+  server: {
+    // 實測腳本的截圖與下載檔放在 scripts/.cache：不讓 dev server 監看。
+    // （Windows 上檔案寫入中被監看會丟 EBUSY 讓伺服器當掉，也會觸發無謂的重新整理）
+    watch: { ignored: ["**/scripts/.cache/**"] },
   },
 });

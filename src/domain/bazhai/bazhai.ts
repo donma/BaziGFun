@@ -18,17 +18,19 @@ export interface PalaceDef {
   name: string; // 宮名：坎
   branch: string; // 地支方位標註：北
   shortName: string; // 卦符號文字：☵
+  /** 卦象三爻，由下而上，1=陽（實線）0=陰（斷線） */
+  lines: [number, number, number];
 }
 
 export const PALACES: PalaceDef[] = [
-  { deg: 0, name: "坎", branch: "北", shortName: "☵" },
-  { deg: 45, name: "艮", branch: "東北", shortName: "☶" },
-  { deg: 90, name: "震", branch: "東", shortName: "☳" },
-  { deg: 135, name: "巽", branch: "東南", shortName: "☴" },
-  { deg: 180, name: "離", branch: "南", shortName: "☲" },
-  { deg: 225, name: "坤", branch: "西南", shortName: "☷" },
-  { deg: 270, name: "兌", branch: "西", shortName: "☱" },
-  { deg: 315, name: "乾", branch: "西北", shortName: "☰" },
+  { deg: 0, name: "坎", branch: "北", shortName: "☵", lines: [0, 1, 0] },
+  { deg: 45, name: "艮", branch: "東北", shortName: "☶", lines: [0, 0, 1] },
+  { deg: 90, name: "震", branch: "東", shortName: "☳", lines: [1, 0, 0] },
+  { deg: 135, name: "巽", branch: "東南", shortName: "☴", lines: [0, 1, 1] },
+  { deg: 180, name: "離", branch: "南", shortName: "☲", lines: [1, 0, 1] },
+  { deg: 225, name: "坤", branch: "西南", shortName: "☷", lines: [0, 0, 0] },
+  { deg: 270, name: "兌", branch: "西", shortName: "☱", lines: [1, 1, 0] },
+  { deg: 315, name: "乾", branch: "西北", shortName: "☰", lines: [1, 1, 1] },
 ];
 
 export type StarKey = "shengQi" | "tianYi" | "yanNian" | "fuWei" | "huoHai" | "liuSha" | "wuGui" | "jueMing";
@@ -37,21 +39,26 @@ export interface StarInfo {
   key: StarKey;
   name: string; // 全名
   short: string; // 歌訣字
-  luck: "good" | "neutral" | "bad";
+  luck: "good" | "bad";
   rank: number; // 吉凶強度排序（吉由強到弱，凶由兇到次）
   tone: string; // UI 色調 token
 }
 
+/** 四吉：生氣、天醫、延年、伏位；四凶：禍害、六煞、五鬼、絕命 */
 export const STARS: Record<StarKey, StarInfo> = {
   shengQi: { key: "shengQi", name: "生氣", short: "生", luck: "good", rank: 1, tone: "good-strong" },
   tianYi: { key: "tianYi", name: "天醫", short: "天", luck: "good", rank: 2, tone: "good-mid" },
   yanNian: { key: "yanNian", name: "延年", short: "延", luck: "good", rank: 3, tone: "good-soft" },
-  fuWei: { key: "fuWei", name: "伏位", short: "伏", luck: "neutral", rank: 4, tone: "neutral" },
+  fuWei: { key: "fuWei", name: "伏位", short: "伏", luck: "good", rank: 4, tone: "good-soft" },
   huoHai: { key: "huoHai", name: "禍害", short: "禍", luck: "bad", rank: 6, tone: "bad-soft" },
   liuSha: { key: "liuSha", name: "六煞", short: "六", luck: "bad", rank: 5, tone: "bad-mid" },
   wuGui: { key: "wuGui", name: "五鬼", short: "五", luck: "bad", rank: 7, tone: "bad-strong" },
   jueMing: { key: "jueMing", name: "絕命", short: "絕", luck: "bad", rank: 8, tone: "bad-strong" },
 };
+
+export function isGoodStar(star: StarKey): boolean {
+  return STARS[star].luck === "good";
+}
 
 const CHAR_TO_STAR: Record<string, StarKey> = {
   生: "shengQi",

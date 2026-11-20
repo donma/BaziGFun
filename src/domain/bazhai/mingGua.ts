@@ -142,3 +142,20 @@ export function ganzhiYear(year: number): string {
   const j = (((year - 4) % 12) + 12) % 12;
   return `${STEM[i]}${BRANCH[j]}`;
 }
+
+/** 卦數的中文數字（乾六、坎一…；無五，五黃已寄宮） */
+export const KUA_NUMERAL: Record<KuaNumber, string> = {
+  1: "一",
+  2: "二",
+  3: "三",
+  4: "四",
+  6: "六",
+  7: "七",
+  8: "八",
+  9: "九",
+};
+
+/** 完整命卦稱呼：如「乾六命」 */
+export function kuaTitle(kua: KuaNumber): string {
+  return `${KUA_TABLE[kua].name}${KUA_NUMERAL[kua]}命`;
+}

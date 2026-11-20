@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { computeMingGua, KUA_TABLE } from "./mingGua";
-import { bazhaiWheel, starFor, PALACES, sectorCenterDeg, boundaryDistanceDeg } from "./bazhai";
+import { computeMingGua, KUA_TABLE, ganzhiYear, kuaTitle } from "./mingGua";
+import { bazhaiWheel, starFor, PALACES, sectorCenterDeg, boundaryDistanceDeg, isGoodStar } from "./bazhai";
 import type { StarKey } from "./bazhai";
 
 describe("命卦計算", () => {
@@ -85,7 +85,58 @@ describe("命卦計算", () => {
   });
 });
 
+describe("干支年與命卦稱呼", () => {
+  it("干支年（對照萬年曆）", () => {
+    expect(ganzhiYear(1984)).toBe("甲子");
+    expect(ganzhiYear(1991)).toBe("辛未");
+    expect(ganzhiYear(2000)).toBe("庚辰");
+    expect(ganzhiYear(2026)).toBe("丙午");
+  });
+
+  it("命卦稱呼使用中文數字（乾六命）", () => {
+    expect(kuaTitle(6)).toBe("乾六命");
+    expect(kuaTitle(1)).toBe("坎一命");
+    expect(kuaTitle(2)).toBe("坤二命");
+    expect(kuaTitle(9)).toBe("離九命");
+  });
+
+  it("1991 女命＝乾六命・西四命・金・計算年 1991（對照參考畫面）", () => {
+    const r = computeMingGua({ birthDate: "1991-06-15", birthTime: null, sex: "female" });
+    expect(r.guaYear).toBe(1991);
+    expect(kuaTitle(r.kua)).toBe("乾六命");
+    expect(KUA_TABLE[r.kua].group).toBe("west4");
+    expect(KUA_TABLE[r.kua].element).toBe("金");
+  });
+});
+
 describe("八宅大遊年對照", () => {
+  it("乾命八方與參考畫面一致（西北伏位吉、北六煞凶、東北天醫吉、西生氣吉、東五鬼凶、西南延年吉、南絕命凶、東南禍害凶）", () => {
+    const w = bazhaiWheel(6);
+    const expected: Array<[number, string, boolean]> = [
+      [315, "fuWei", true],
+      [0, "liuSha", false],
+      [45, "tianYi", true],
+      [270, "shengQi", true],
+      [90, "wuGui", false],
+      [225, "yanNian", true],
+      [180, "jueMing", false],
+      [135, "huoHai", false],
+    ];
+    for (const [deg, star, good] of expected) {
+      expect(w[deg as 0], `deg ${deg}`).toBe(star);
+      expect(isGoodStar(w[deg as 0]), `deg ${deg} luck`).toBe(good);
+    }
+  });
+
+  it("卦象三爻與命卦表一致，且八卦互異", () => {
+    const byName = Object.fromEntries(Object.values(KUA_TABLE).map((k) => [k.name, k.trigramLines]));
+    const seen = new Set<string>();
+    for (const p of PALACES) {
+      expect(p.lines, `${p.name} 卦象`).toEqual(byName[p.name]);
+      seen.add(p.lines.join(""));
+    }
+    expect(seen.size).toBe(8);
+  });
   // 乾命（6）大遊年歌：乾六天五禍絕延生
   // 宮序（自乾西北順時針）：乾→坎→艮→震→巽→離→坤→兌
   // 乾命本宮圓序（自乾起順時針）：乾→坎→艮→震→巽→離→坤→兌

@@ -1,58 +1,76 @@
 /**
- * 主應用：啟動引導、相機實景羅盤、人物管理、拍照、抽屜分析、寬螢幕面板、匯出。
+ * 主應用：啟動引導、即時相機羅盤、人物管理、拍照、抽屜／側欄分析、匯出。
+ *
+ * 背景永遠是後置相機的即時畫面；沒有任何靜態背景圖。
+ * 方位來源有五種顯示狀態（kind）：locked 鎖定、manual 手動、live 感測即時、
+ * stale 感測中斷（只顯示最後讀數、明確標示非即時）、demo 尚無感測（示範 0°，明確標示）。
  */
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { APP_VERSION } from "./version";
-import { MingGuaPanel } from "../analysis/MingGuaPanel";
-import { KUA_TABLE, computeMingGua, type KuaNumber, type MingGuaResult } from "../domain/bazhai/mingGua";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { KUA_TABLE, computeMingGua, kuaTitle } from "../domain/bazhai/mingGua";
 import {
-  bazhaiWheel,
-  starFor,
+  BOUNDARY_WARN_DEG,
   PALACES,
-  sectorCenterDeg,
   STARS,
+  bazhaiWheel,
+  isGoodStar,
   type DirectionDeg,
   type StarKey,
 } from "../domain/bazhai/bazhai";
-import { boundaryDistanceDeg } from "../domain/compass/heading";
+import { boundaryDistanceDeg, normalizeDeg, type Quality } from "../domain/compass/heading";
 import { useHeading } from "../sensors/useHeading";
+import { useStableSector } from "../sensors/useStableSector";
 import { detectCapabilities } from "../sensors/deviceOrientation";
 import { createCameraManager, type CameraManager } from "../camera/cameraManager";
+import { composeCapture } from "../camera/composite";
 import {
-  loadLS,
-  saveLS,
-  putPhoto,
-  getPhoto,
-  putRecord,
-  listRecords,
-  deleteRecord,
-  uuid,
   SCHEMA_VERSION,
+  deletePhoto,
+  deleteRecord,
+  getPhoto,
+  listRecords,
+  loadLS,
+  putPhoto,
+  putRecord,
+  saveLS,
+  uuid,
+  type LSData,
   type Person,
   type PhotoRecordMeta,
-  type LSData,
 } from "../storage/storage";
-import { buildExportJSON, exportZip, exportSinglePhotoJpeg, shareOrDownload } from "../export/exporter";
+import { buildExportJSON, exportSinglePhotoJpeg, exportZip, shareOrDownload } from "../export/exporter";
 import { BaguaDial } from "../components/BaguaDial";
+import { OnboardingScreen } from "./Onboarding";
+import { hasPersistentSidePanel } from "./layout";
+import { SidePanel, type PanelTab } from "./panels";
+import { ActionRow, BrandBar, HeadingCard, PersonCard, SchemePill, type ActionDef } from "./parts";
 
 type Screen = "onboarding" | "compass";
-type PanelTab = "sectors" | "persons" | "records";
+type ViewKind = "locked" | "manual" | "live" | "stale" | "demo";
 
-const STAR_NAME: Record<StarKey, string> = Object.fromEntries(
-  Object.entries(STARS).map(([k, v]) => [k, v.name]),
-) as Record<StarKey, string>;
+interface Reading {
+  heading: number;
+  raw: number | null;
+  source: "sensor" | "manual";
+  quality: Quality;
+}
 
-/** 吉凶說明（傳統文化参考，非科學驗證） */
+/** 吉凶說明（傳統文化參考，非科學驗證） */
 const STAR_DESC: Record<StarKey, string> = {
-  fuWei: "適合：休息、穩定、累積、有利於守成、儲蓄、提升整體運勢。",
-  shengQi: "適合：積極、開創、活力、有利於事業拓展與人脈。",
-  tianYi: "適合：健康、療癒、人際和諧、有利於身心調養。",
-  yanNian: "適合：和諧、長久、穩定、有利於感情與合作。",
+  fuWei: "適合：休息、穩定、累積。利於守成、養氣、提升整體運勢。",
+  shengQi: "適合：積極、開創、活力。有利於事業拓展與人脈。",
+  tianYi: "適合：健康、療癒、人際和諧。有利於身心調養。",
+  yanNian: "適合：和諧、長久、穩定。有利於感情與合作。",
   liuSha: "留意：人際是非與情緒波動，重要座位宜避開。",
   wuGui: "留意：變動、口舌與專注力受干擾，配置宜謹慎。",
   huoHai: "留意：壓力與是非，長期停留容易疲憊。",
   jueMing: "留意：阻礙與決策風險，重要座位宜避開。",
 };
+
+function signedOffset(deg: number): string {
+  const d = ((deg + 540) % 360) - 180; // → (-180, 180]
+  const r = Math.round(d);
+  return `${r > 0 ? "+" : ""}${r}°`;
+}
 
 export default function App() {
   const [ls, setLs] = useState<LSData>(() => loadLS());
@@ -63,22 +81,30 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [manualMode, setManualMode] = useState(false);
   const [manualDeg, setManualDeg] = useState(0);
+  const [locked, setLocked] = useState<Reading | null>(null);
+  const [showCalibration, setShowCalibration] = useState(false);
   const [pendingCapture, setPendingCapture] = useState(false);
   const [records, setRecords] = useState<PhotoRecordMeta[]>([]);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
-  const [showOnboardingPerm, setShowOnboardingPerm] = useState(false);
-  const [camStatus, setCamStatus] = useState<"idle" | "running" | "denied" | "failed">("idle");
-  const [lockedHeading, setLockedHeading] = useState<number | null>(null);
-  const [showCalibration, setShowCalibration] = useState(false);
+  const [camStatus, setCamStatus] = useState<"idle" | "running" | "denied" | "failed" | "ended">("idle");
 
   const camRef = useRef<CameraManager | null>(null);
+  const sceneRef = useRef<HTMLDivElement | null>(null);
   const videoHostRef = useRef<HTMLDivElement | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const urlsRef = useRef<string[]>([]);
+  const lastGoodHeading = useRef<number | null>(null);
+
   const caps = useMemo(() => detectCapabilities(), []);
-  const heading = useHeading(screen === "compass" && !manualMode, ls.settings.northReference);
+  // 真北需要位置與磁偏角資料，第一版尚未提供：一律以磁北為基準（不默默以磁北冒充真北）
+  const heading = useHeading(screen === "compass" && !manualMode, "magnetic");
+  const hs = heading.state;
 
-  const currentPerson = ls.persons.find((p) => p.id === ls.settings.currentPersonId) ?? ls.persons[0] ?? null;
+  /* ---------- 人物與命卦 ---------- */
 
-  // 命卦重算（引擎版本變更時自動跟隨）
+  const currentPerson: Person | null =
+    ls.persons.find((p) => p.id === ls.settings.currentPersonId) ?? ls.persons[0] ?? null;
+
   const mingGua = useMemo(() => {
     if (!currentPerson) return null;
     try {
@@ -92,105 +118,197 @@ export default function App() {
     }
   }, [currentPerson]);
 
-  const personKua = useMemo<{ kua: KuaNumber; uncertain: boolean } | null>(() => {
-    if (!mingGua) return null;
-    return { kua: mingGua.kua, uncertain: mingGua.boundaryUncertain };
-  }, [mingGua]);
+  const wheel = useMemo(() => (mingGua ? bazhaiWheel(mingGua.kua) : null), [mingGua]);
+  const kuaInfo = mingGua ? KUA_TABLE[mingGua.kua] : null;
 
-  const wheel = useMemo(() => (personKua ? bazhaiWheel(personKua.kua) : null), [personKua]);
+  /* ---------- 方位狀態 ---------- */
 
-  const headingNow = lockedHeading ?? (manualMode ? manualDeg : heading.state.displayHeading);
-  /** 無感測時以示範方位呈現，明確標示避免偽造精度 */
-  const usingFallback = headingNow === null;
-  const displayHeading = usingFallback ? 0 : headingNow;
-  const displaySector = sectorCenterDeg(displayHeading);
-  const displayStar = displaySector !== null && wheel ? wheel[displaySector] : null;
-  const currentSector = headingNow !== null ? sectorCenterDeg(headingNow) : null;
-  const currentStar = currentSector !== null && wheel ? wheel[currentSector] : null;
-  const boundaryDist = headingNow !== null ? boundaryDistanceDeg(headingNow) : null;
-  const nearBoundary = boundaryDist !== null && boundaryDist <= 2;
+  const sensorLive = hs.displayHeading !== null && hs.quality !== "unavailable";
+  const sensorStale = hs.displayHeading !== null && hs.quality === "unavailable";
+  const liveReading: Reading | null = manualMode
+    ? { heading: manualDeg, raw: null, source: "manual", quality: "valid" }
+    : sensorLive
+      ? { heading: hs.displayHeading as number, raw: hs.rawHeading, source: "sensor", quality: hs.quality }
+      : null;
+  const reading = locked ?? liveReading;
+  const kind: ViewKind = locked ? "locked" : manualMode ? "manual" : sensorLive ? "live" : sensorStale ? "stale" : "demo";
+  const trusted = kind === "live" || kind === "manual" || kind === "locked";
+  const degraded = kind === "live" && hs.tiltDegraded;
+  // 鏡頭朝天／地時水平朝向不可靠：盤面與數字凍結在最後一次有效方位（並明確標示），不跟著亂轉
+  if (kind === "live" && !hs.tiltDegraded) lastGoodHeading.current = hs.displayHeading;
+  const rawView = reading ? reading.heading : sensorStale ? (hs.displayHeading as number) : 0;
+  const viewHeading = degraded && lastGoodHeading.current !== null ? lastGoodHeading.current : rawView;
 
-  useEffect(() => {
-    listRecords().then(setRecords);
+  const stableSector = useStableSector(viewHeading, degraded || kind === "stale");
+  const star: StarKey | null = stableSector !== null && wheel ? wheel[stableSector] : null;
+  const palace = stableSector !== null ? (PALACES.find((p) => p.deg === stableSector) ?? null) : null;
+  const boundaryDist = boundaryDistanceDeg(viewHeading);
+  const nearBoundary = trusted && !degraded && boundaryDist <= BOUNDARY_WARN_DEG;
+  const capturable = trusted && !degraded && star !== null && !pendingCapture;
+
+  /* ---------- 提示 ---------- */
+
+  const showToast = useCallback((msg: string) => {
+    window.clearTimeout(toastTimer.current);
+    setToast(msg);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   }, []);
 
-  // 載入照片縮圖 URL
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  /* ---------- 紀錄與縮圖 ---------- */
+
+  useEffect(() => {
+    listRecords()
+      .then(setRecords)
+      .catch(() => setRecords([]));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const urls: Record<string, string> = {};
+      const created: string[] = [];
       for (const r of records.slice(0, 30)) {
         if (!r.photoId) continue;
-        const ph = await getPhoto(r.photoId);
-        if (ph && !cancelled) urls[r.photoId] = URL.createObjectURL(ph.blob);
+        const ph = await getPhoto(r.photoId).catch(() => undefined);
+        if (ph) {
+          const u = URL.createObjectURL(ph.blob);
+          urls[r.photoId] = u;
+          created.push(u);
+        }
       }
-      if (!cancelled) setPhotoUrls(urls);
+      if (cancelled) {
+        created.forEach((u) => URL.revokeObjectURL(u));
+        return;
+      }
+      urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      urlsRef.current = created;
+      setPhotoUrls(urls);
     })();
     return () => {
       cancelled = true;
-      Object.values(photoUrls).forEach((u) => URL.revokeObjectURL(u));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [records]);
 
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2600);
-  }, []);
+  useEffect(
+    () => () => {
+      urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+    },
+    [],
+  );
 
-  // 相機啟動（使用者進入羅盤頁後手勢觸發）
-  const startCamera = useCallback(async () => {
-    try {
-      if (!camRef.current) camRef.current = createCameraManager();
-      const host = videoHostRef.current;
-      if (host && camRef.current.video && !camRef.current.video.parentElement) {
-        camRef.current.video.className = "scene-video";
-        host.prepend(camRef.current.video);
+  /* ---------- 相機 ---------- */
+
+  const startCamera = useCallback(
+    async (isRetry = false): Promise<void> => {
+      try {
+        if (!camRef.current) {
+          const cam = createCameraManager();
+          // 串流被外力結束（其他 App 搶走相機、裝置中斷）：不在死畫面上繼續標示「相機✓」
+          cam.onEnded = () => {
+            setCamStatus("ended");
+            showToast("相機畫面中斷（可能被其他 App 使用）。點狀態列「相機中斷」重新開啟");
+          };
+          camRef.current = cam;
+        }
+        const host = videoHostRef.current;
+        const video = camRef.current.video;
+        if (host && video && !video.parentElement) {
+          video.className = "scene-video";
+          host.prepend(video);
+        }
+        // false＝啟動途中被 stop() 取消（例如使用者剛好切到背景）：維持 idle，不當成成功
+        if (await camRef.current.start()) setCamStatus("running");
+      } catch (err) {
+        const name = (err as DOMException)?.name ?? "";
+        // 暫時性錯誤（相機剛被別的頁面／App 釋放、iOS 從背景回到前景）：自動重試一次
+        if (!isRetry && (name === "NotReadableError" || name === "AbortError")) {
+          await new Promise((r) => setTimeout(r, 700));
+          return startCamera(true);
+        }
+        console.warn("[BaziGFun] 相機啟動失敗：", name, (err as Error)?.message);
+        setCamStatus(name === "NotAllowedError" ? "denied" : "failed");
+        showToast(
+          name === "NotAllowedError"
+            ? "相機權限被拒絕：請在瀏覽器網址列允許相機，或改用手動羅盤"
+            : name === "NotFoundError"
+              ? "找不到可用相機（此裝置可能沒有後置鏡頭）"
+              : name === "NotReadableError"
+                ? "相機被其他 App 或頁面佔用，請關閉後點狀態列的「相機失敗」重試"
+                : "相機無法啟動：請確認使用 HTTPS 與 Safari/Chrome，或改用手動羅盤",
+        );
       }
-      await camRef.current.start();
-      setCamStatus("running");
-    } catch (err) {
-      const name = (err as DOMException)?.name;
-      setCamStatus(name === "NotAllowedError" ? "denied" : "failed");
-      showToast(
-        name === "NotAllowedError"
-          ? "相機權限被拒絕：請在瀏覽器網址列允許相機，或改用手動羅盤"
-          : name === "NotFoundError"
-            ? "找不到可用相機（此裝置可能沒有後置鏡頭）"
-            : "相機無法啟動：請確認使用 HTTPS 與 Safari/Chrome，或改用手動羅盤",
-      );
-    }
-  }, [showToast]);
+    },
+    [showToast],
+  );
 
   const stopCamera = useCallback(() => {
     camRef.current?.stop();
     setCamStatus("idle");
   }, []);
 
-  // 進入羅盤即啟動相機（重新開啟 App 時不再依赖引導流程）
+  // 進入羅盤即啟動相機（重新開啟 App 時不依賴引導流程）
   useEffect(() => {
-    if (screen === "compass" && camStatus === "idle") {
-      void startCamera();
-    }
+    if (screen === "compass" && camStatus === "idle" && !document.hidden) void startCamera();
   }, [screen, camStatus, startCamera]);
 
   // 頁面隱藏時暫停相機；回到前景時重新啟動（規格 8）
   useEffect(() => {
     const onVis = () => {
-      if (document.hidden) {
-        stopCamera();
-      } else if (screen === "compass") {
-        void startCamera(); // 已在運行時 internally 直接返回
-      }
+      if (document.hidden) stopCamera();
+      else if (screen === "compass") void startCamera();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [screen, startCamera, stopCamera]);
 
-  const persist = useCallback((next: LSData) => {
-    setLs(next);
-    saveLS(next);
-  }, []);
+  // 量測時保持螢幕不休眠（瞄準時手機不會自己變暗）
+  useEffect(() => {
+    if (screen !== "compass" || !("wakeLock" in navigator)) return;
+    let sentinel: WakeLockSentinel | null = null;
+    let cancelled = false;
+    const acquire = async () => {
+      try {
+        const s = await navigator.wakeLock.request("screen");
+        if (cancelled) void s.release();
+        else sentinel = s;
+      } catch {
+        /* 不支援或被拒絕：略過 */
+      }
+    };
+    void acquire();
+    const onVis = () => {
+      if (!document.hidden) void acquire();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVis);
+      void sentinel?.release();
+    };
+  }, [screen]);
+
+  // 狀態列／網址列顏色跟著畫面：引導頁是米色，相機羅盤是深色
+  useEffect(() => {
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", screen === "compass" ? "#241c0f" : "#f6f1e7");
+  }, [screen]);
+
+  /* ---------- 人物 ---------- */
+
+  const persist = useCallback(
+    (next: LSData) => {
+      setLs(next);
+      try {
+        saveLS(next);
+      } catch {
+        showToast("無法寫入本機儲存空間，變更可能不會保留");
+      }
+    },
+    [showToast],
+  );
 
   const addPerson = useCallback(
     (name: string, birthDate: string, birthTime: string | null, sex: "male" | "female") => {
@@ -204,15 +322,12 @@ export default function App() {
         kua: r.kua,
         createdAt: new Date().toISOString(),
       };
-      const next: LSData = {
+      persist({
         ...ls,
         persons: [...ls.persons, person],
         settings: { ...ls.settings, currentPersonId: person.id },
-      };
-      persist(next);
-      if (r.boundaryUncertain) {
-        showToast("生日接近立春交界，建議補出生時間以確定命卦");
-      }
+      });
+      if (r.boundaryUncertain) showToast("生日接近立春交界，建議補出生時間以確定命卦");
       return person;
     },
     [ls, persist, showToast],
@@ -220,100 +335,151 @@ export default function App() {
 
   const removePerson = useCallback(
     (id: string) => {
-      const next: LSData = {
+      persist({
         ...ls,
         persons: ls.persons.filter((p) => p.id !== id),
         settings: {
           ...ls.settings,
           currentPersonId: ls.settings.currentPersonId === id ? null : ls.settings.currentPersonId,
         },
-      };
-      persist(next);
+      });
     },
     [ls, persist],
   );
+
+  // 最後一位人物被刪除 → 回到引導
+  useEffect(() => {
+    if (screen === "compass" && ls.persons.length === 0) {
+      setDrawerOpen(false);
+      setScreen("onboarding");
+    }
+  }, [screen, ls.persons.length]);
 
   const selectPerson = useCallback(
-    (id: string) => {
-      persist({ ...ls, settings: { ...ls.settings, currentPersonId: id } });
-    },
+    (id: string) => persist({ ...ls, settings: { ...ls.settings, currentPersonId: id } }),
     [ls, persist],
   );
 
-  // 拍照合成
+  /* ---------- 操作 ---------- */
+
+  // 鍵盤 Esc 關閉抽屜／校正視窗
+  useEffect(() => {
+    if (!drawerOpen && !showCalibration) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setDrawerOpen(false);
+        setShowCalibration(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen, showCalibration]);
+  const openPanel = useCallback((tab: PanelTab) => {
+    setPanelTab(tab);
+    // 有常駐面板（寬螢幕／摺疊雙螢幕）時只需切換分頁；不要把（看不見的）抽屜標成開啟，
+    // 否則視窗縮回手機寬度時抽屜會突然彈出來
+    if (!hasPersistentSidePanel()) setDrawerOpen(true);
+  }, []);
+
+  const onSectorClick = useCallback(
+    (deg: DirectionDeg) => {
+      setHighlightDeg((prev) => (prev === deg ? null : deg));
+      const p = PALACES.find((x) => x.deg === deg);
+      const s = wheel?.[deg];
+      if (p && s) showToast(`${p.branch}方：${STARS[s].name}（${isGoodStar(s) ? "吉方" : "凶方"}）`);
+    },
+    [wheel, showToast],
+  );
+
+  const toggleLock = () => {
+    if (locked) {
+      setLocked(null);
+      return;
+    }
+    if (!reading) {
+      showToast("尚無可鎖定的方位");
+      return;
+    }
+    setLocked(reading);
+  };
+
+  const toggleManual = () => {
+    setLocked(null);
+    if (!manualMode) setManualDeg(Math.round(viewHeading)); // 從目前方位開始微調，不跳回 0°
+    setManualMode(!manualMode);
+  };
+
+  const openCalibration = async () => {
+    if (manualMode) {
+      showToast("手動羅盤不需要校正；返回感測後再校正");
+      return;
+    }
+    await heading.requestPermission();
+    setShowCalibration(true);
+  };
+
+  const calibrate = (targetDeg: number, label: string) => {
+    setShowCalibration(false);
+    if (hs.tiltDegraded) {
+      showToast("鏡頭接近朝天／地，請水平對準後再校正");
+      return;
+    }
+    if (heading.calibrateTo(targetDeg)) showToast(`已校正：目前朝向視為${label}（${targetDeg}°）`);
+    else showToast("尚無即時感測資料，無法校正");
+  };
+
+  const enableSensor = async () => {
+    const res = await heading.requestPermission();
+    if (res === "denied") {
+      showToast("方向感測權限被拒絕：請到 設定 → Safari → 動作與方向存取 允許後重新載入");
+    } else if (res === "unsupported") {
+      showToast("此瀏覽器不支援方向感測，請改用手動羅盤");
+    }
+  };
+
+  /* ---------- 拍照 ---------- */
+
   const capture = useCallback(async () => {
-    if (!currentPerson || !personKua || !wheel || headingNow === null) return;
+    if (!currentPerson || !mingGua || !kuaInfo || !star || !palace || !reading || !sceneRef.current) return;
     setPendingCapture(true);
     try {
-      const cam = camRef.current;
-      const frame = cam?.captureFrame();
-      const W = frame?.width ?? 1080;
-      const H = frame?.height ?? 1920;
-      const canvas = document.createElement("canvas");
-      canvas.width = W;
-      canvas.height = H;
-      const ctx = canvas.getContext("2d")!;
-      if (frame) {
-        ctx.drawImage(frame, 0, 0, W, H);
-      } else {
-        ctx.fillStyle = "#efe7d6";
-        ctx.fillRect(0, 0, W, H);
-      }
-      // 疊上羅盤（以畫面中央 55% 大小）
-      const dialSize = Math.floor(Math.min(W, H) * 0.55);
-      const svg = document.querySelector(".compass-svg") as SVGElement | null;
-      if (svg) {
-        const xml = new XMLSerializer().serializeToString(svg);
-        const img = new Image();
-        const svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
-        const url = URL.createObjectURL(svgBlob);
-        await new Promise<void>((resolve) => {
-          img.onload = () => resolve();
-          img.onerror = () => resolve();
-          img.src = url;
-        });
-        ctx.globalAlpha = 0.88;
-        ctx.drawImage(img, (W - dialSize) / 2, (H - dialSize) / 2, dialSize, dialSize);
-        ctx.globalAlpha = 1;
-        URL.revokeObjectURL(url);
-      }
-      // 資訊卡
-      const pad = Math.floor(W * 0.04);
-      ctx.font = `${Math.floor(W * 0.045)}px "PingFang TC", sans-serif`;
-      ctx.fillStyle = "rgba(246,241,231,0.85)";
-      const sector = sectorCenterDeg(headingNow)!;
-      const star = wheel[sector];
-      const info = `${currentPerson.name}・${KUA_TABLE[personKua.kua].name}命｜${Math.round(headingNow)}° ${PALACES.find((p) => p.deg === sector)?.branch ?? ""}・${STAR_NAME[star]}`;
-      ctx.fillText(info, pad, H - pad * 2);
-      const ts = new Date().toISOString();
-      ctx.font = `${Math.floor(W * 0.032)}px sans-serif`;
-      ctx.fillStyle = "rgba(246,241,231,0.7)";
-      ctx.fillText(`${ts}｜${ls.settings.northReference === "magnetic" ? "磁北" : "真北"}｜${manualMode ? "手動" : "感測"}`, pad, H - pad);
-
+      const good = isGoodStar(star);
+      const now = new Date();
+      const sourceLabel = reading.source === "manual" ? "手動" : locked ? "感測（已鎖定）" : "感測";
+      const qualityLabel =
+        reading.source === "manual" ? "" : reading.quality === "valid" ? "" : "｜感測可信度：弱";
+      const blob = await composeCapture({
+        video: camRef.current?.state === "running" ? camRef.current.video : null,
+        sceneEl: sceneRef.current,
+        dialEl: sceneRef.current.querySelector<SVGSVGElement>(".compass-svg"),
+        info: {
+          headline: `${currentPerson.name}｜${kuaTitle(mingGua.kua)}（${kuaInfo.group === "east4" ? "東四命" : "西四命"}）`,
+          main: `${Math.round(viewHeading)}° ${palace.branch}　${STARS[star].name}（${good ? "吉方" : "凶方"}）`,
+          meta: `${now.toLocaleString()}｜磁北｜${sourceLabel}${qualityLabel}`,
+          tone: good ? "good" : "bad",
+          warn: nearBoundary ? `接近方位交界（距邊界 ${boundaryDist.toFixed(1)}°），吉凶可能跳動` : undefined,
+        },
+      });
       const photoId = uuid();
-      const blob = await new Promise<Blob>((resolve) =>
-        canvas.toBlob((b) => resolve(b!), "image/jpeg", 0.88),
-      );
       try {
         await putPhoto(photoId, blob, "image/jpeg");
-      } catch {
-        showToast("儲存空間不足，照片未能保存");
-        setPendingCapture(false);
+      } catch (e) {
+        showToast((e as DOMException)?.name === "QuotaExceededError" ? "儲存空間不足，照片未能保存" : "照片儲存失敗");
         return;
       }
       const rec: PhotoRecordMeta = {
         id: uuid(),
         personId: currentPerson.id,
-        title: `${PALACES.find((p) => p.deg === sector)?.branch ?? ""}・${STAR_NAME[star]}`,
+        title: `${palace.branch}・${STARS[star].name}`,
         note: "",
-        capturedAt: ts,
-        azimuthRaw: manualMode ? null : heading.state.rawHeading,
-        azimuthDisplay: Math.round(headingNow * 10) / 10,
-        source: manualMode ? "manual" : "sensor",
-        northReference: ls.settings.northReference,
-        palace: PALACES.find((p) => p.deg === sector)?.name ?? "",
+        capturedAt: now.toISOString(),
+        azimuthRaw: reading.raw,
+        azimuthDisplay: Math.round(viewHeading * 10) / 10,
+        source: reading.source,
+        northReference: "magnetic",
+        palace: palace.name,
         star,
-        quality: manualMode ? "valid" : heading.state.quality,
+        quality: reading.quality,
         nearBoundary,
         photoId,
         schemaVersion: SCHEMA_VERSION,
@@ -321,19 +487,23 @@ export default function App() {
       await putRecord(rec);
       setRecords(await listRecords());
       showToast("已拍照並記錄");
+    } catch (e) {
+      showToast(`拍照失敗：${(e as Error).message}`);
     } finally {
       setPendingCapture(false);
     }
-  }, [currentPerson, personKua, wheel, headingNow, heading.state, manualMode, nearBoundary, ls.settings.northReference, showToast]);
+  }, [currentPerson, mingGua, kuaInfo, star, palace, reading, locked, viewHeading, nearBoundary, boundaryDist, showToast]);
 
-  const deleteRecordAndPhoto = useCallback(async (id: string) => {
-    const { deletePhoto } = await import("../storage/storage");
-    const rec = records.find((r) => r.id === id);
-    if (rec?.photoId) await deletePhoto(rec.photoId);
-    await deleteRecord(id);
-    setRecords(await listRecords());
-    showToast("紀錄已刪除");
-  }, [records, showToast]);
+  const deleteRecordAndPhoto = useCallback(
+    async (id: string) => {
+      const rec = records.find((r) => r.id === id);
+      if (rec?.photoId) await deletePhoto(rec.photoId);
+      await deleteRecord(id);
+      setRecords(await listRecords());
+      showToast("紀錄已刪除");
+    },
+    [records, showToast],
+  );
 
   const doExportZip = useCallback(async () => {
     const res = await exportZip();
@@ -342,20 +512,22 @@ export default function App() {
   }, [showToast]);
 
   const doExportJson = useCallback(async () => {
-    const blob = buildExportJSON(records);
-    await shareOrDownload("bazigfun-data.json", blob);
+    await shareOrDownload("bazigfun-data.json", buildExportJSON(records));
     showToast("JSON 已匯出");
   }, [records, showToast]);
 
-  const doExportOne = useCallback(async (photoId: string) => {
-    const res = await exportSinglePhotoJpeg(photoId);
-    if (res) {
-      await shareOrDownload(res.filename, res.blob);
-      showToast("照片已匯出");
-    }
-  }, [showToast]);
+  const doExportOne = useCallback(
+    async (photoId: string) => {
+      const res = await exportSinglePhotoJpeg(photoId);
+      if (res) {
+        await shareOrDownload(res.filename, res.blob);
+        showToast("照片已匯出");
+      }
+    },
+    [showToast],
+  );
 
-  /* ---------- 畫面 ---------- */
+  /* ---------- 引導畫面 ---------- */
 
   if (screen === "onboarding") {
     return (
@@ -364,7 +536,6 @@ export default function App() {
         onAddPerson={addPerson}
         personCount={ls.persons.length}
         onRequestPerm={async () => {
-          setShowOnboardingPerm(true);
           await heading.requestPermission();
           await startCamera();
         }}
@@ -373,266 +544,274 @@ export default function App() {
     );
   }
 
-  const kuaInfo = personKua ? KUA_TABLE[personKua.kua] : null;
-  const starCls = currentStar
-    ? STARS[currentStar].luck === "good"
-      ? "star-good"
-      : STARS[currentStar].luck === "bad"
-        ? "star-bad"
-        : "star-neutral"
-    : "";
+  /* ---------- 主畫面所需的顯示文字 ---------- */
+
+  const sensorChip: { text: string; tone: string; title: string } = (() => {
+    if (kind === "locked") return { text: "已鎖定", tone: "warn", title: "方位已鎖定，不隨手機轉動" };
+    if (kind === "manual") return { text: "手動", tone: "", title: "手動羅盤模式" };
+    if (kind === "stale") return { text: "感測中斷", tone: "bad", title: "一段時間沒有方向資料，顯示的是最後讀數" };
+    if (kind === "demo") return { text: "無感測", tone: "bad", title: "尚未取得方向感測資料" };
+    if (hs.tiltDegraded) return { text: "朝向不穩", tone: "warn", title: "鏡頭接近垂直，水平朝向不可靠" };
+    if (hs.semantic === "relative-euler") return { text: "需校正", tone: "warn", title: "此裝置只提供相對方位（不是絕對北），請先校正" };
+    if (hs.quality === "uncertain") return { text: "感測弱", tone: "warn", title: "感測精度不足，建議離開金屬或電器並校正" };
+    return { text: "感測✓", tone: "good", title: "方向感測正常（精度仍需實機標定）" };
+  })();
+
+  const tags: Array<{ text: string; tone?: "bad" }> = [];
+  if (kind === "demo") tags.push({ text: "示範方位・未取得感測" });
+  if (kind === "stale") tags.push({ text: "最後讀數・感測中斷", tone: "bad" });
+  if (degraded) tags.push({ text: "最後有效方位", tone: "bad" });
+  if (kind === "locked") tags.push({ text: "已鎖定" });
+  if (kind === "manual") tags.push({ text: "手動" });
+
+  const needPermission = caps.hasRequestPermission && heading.permission !== "granted";
+  let desc: string;
+  let cta: { text: string; onClick: () => void } | null = null;
+  if (degraded) {
+    desc = "請將手機拿正，讓鏡頭對準水平方向。";
+  } else if (kind === "demo") {
+    if (!caps.hasDeviceOrientation) {
+      desc = "此裝置不支援方向感測，請用「切換羅盤」手動對準。";
+    } else if (heading.permission === "denied") {
+      desc = "方向感測權限被拒絕。請到 設定 → Safari → 動作與方向存取 允許後重新載入頁面，或用「切換羅盤」手動對準。";
+    } else if (needPermission) {
+      desc = "尚未取得方向感測。請按下方按鈕啟用，或用「切換羅盤」手動對準。";
+      cta = { text: "啟用方向感測", onClick: () => void enableSensor() };
+    } else {
+      desc = "等待方向感測資料…桌面瀏覽器通常沒有方向感測器，請用「切換羅盤」手動對準。";
+    }
+  } else if (kind === "stale") {
+    desc = "這是最後一次讀數，不是即時量測。手機完全靜止時部分瀏覽器不再送資料，輕輕轉動手機即可恢復；也可改用「切換羅盤」手動對準。";
+  } else if (kind === "live" && hs.semantic === "relative-euler") {
+    desc = "此裝置只提供相對方位（不是絕對北）。請按「校正指南針」對準已知方位，或改用手動羅盤。";
+  } else {
+    desc = star ? STAR_DESC[star] : "";
+  }
+
+  const warn = degraded
+    ? { text: "鏡頭接近垂直朝天／地，水平朝向不可靠，已暫停吉凶判定。", tone: "bad" as const }
+    : nearBoundary
+      ? { text: `接近方位交界（距邊界 ${boundaryDist.toFixed(1)}°），吉凶可能跳動。` }
+      : null;
+
+  const pill = degraded
+    ? { name: "暫停判定", sub: "", tone: "muted" as const, dim: false }
+    : star
+      ? {
+          name: STARS[star].name,
+          sub: isGoodStar(star) ? "（吉方）" : "（凶方）",
+          tone: isGoodStar(star) ? ("good" as const) : ("bad" as const),
+          dim: kind === "demo" || kind === "stale",
+        }
+      : null;
+
+  const offsetActive = Math.abs(((heading.manualOffsetDeg + 540) % 360) - 180) >= 0.5;
+
+  const actions: ActionDef[] = [
+    { key: "calibrate", label: "校正指南針", icon: "calibrate", onClick: () => void openCalibration() },
+    {
+      key: "lock",
+      label: locked ? "解鎖方位" : "鎖定方位",
+      icon: locked ? "unlock" : "lock",
+      on: !!locked,
+      disabled: !locked && !reading,
+      onClick: toggleLock,
+    },
+    {
+      key: "capture",
+      label: pendingCapture ? "處理中…" : "拍照紀錄",
+      icon: "camera",
+      disabled: !capturable,
+      onClick: () => void capture(),
+    },
+    {
+      key: "mode",
+      label: manualMode ? "返回感測" : "切換羅盤",
+      icon: "expand",
+      accent: true,
+      on: manualMode,
+      onClick: toggleManual,
+    },
+  ];
+
+  const sidePanel = (
+    <SidePanel
+      tab={panelTab}
+      setTab={setPanelTab}
+      person={currentPerson}
+      mingGua={mingGua}
+      wheel={wheel}
+      highlightDeg={highlightDeg}
+      setHighlightDeg={setHighlightDeg}
+      ls={ls}
+      selectPerson={(id) => {
+        selectPerson(id);
+        setDrawerOpen(false);
+      }}
+      removePerson={removePerson}
+      addPerson={addPerson}
+      records={records}
+      photoUrls={photoUrls}
+      onExportZip={doExportZip}
+      onExportJson={doExportJson}
+      onExportOne={doExportOne}
+      onDeleteRecord={deleteRecordAndPhoto}
+    />
+  );
 
   return (
-    <div className="scene">
-      <div ref={videoHostRef} style={{ position: "absolute", inset: 0 }}>
-        {camStatus !== "running" && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              background:
-                "linear-gradient(180deg, #efe7d6 0%, #e6dcc4 55%, #d8c9a5 100%)",
-            }}
-          />
-        )}
+    <div className="scene" ref={sceneRef}>
+      <div ref={videoHostRef} className="scene-media">
+        {camStatus !== "running" && <div className="scene-fallback" />}
       </div>
+      <div className="scene-scrim top" />
+      <div className="scene-scrim bottom" />
 
       <div className="layout-wide">
         <div className="scene-overlay">
-          {/* 頂部：人物命卦資訊 */}
-          <div className="glass topbar topbar-detail">
-            <button
-              className="btn"
-              style={{ padding: "6px 12px", minHeight: 36 }}
-              onClick={() => { setPanelTab("persons"); setDrawerOpen(true); }}
-              aria-label="開啟人物選單"
-            >
-              ☰
-            </button>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="topbar-line1">
-                <span className="person-name">{currentPerson?.name ?? "未選人物"}</span>
-                <span className="kua-inline">
-                  {kuaInfo ? `命卦: ${kuaInfo.name}${personKua?.kua}命（${kuaInfo.group === "east4" ? "東四命" : "西四命"}）` : "—"}
-                </span>
-              </div>
-              <div className="kua-badge">
-                {kuaInfo ? `五行: ${kuaInfo.element} ｜ 立春換年: ${mingGua?.guaYear ?? "—"}年` : "—"}
-                {personKua?.uncertain && " ⚠️立春交界"}
-              </div>
-            </div>
-            <button
-              className="chip detail-btn"
-              onClick={() => { setPanelTab("sectors"); setDrawerOpen(true); }}
-            >
-              命盤詳情 ›
-            </button>
-          </div>
+          <BrandBar onLeft={() => openPanel("persons")} onRight={() => openPanel("records")} />
+          <SchemePill />
+
+          {currentPerson && mingGua && kuaInfo ? (
+            <PersonCard
+              name={currentPerson.name}
+              kuaText={kuaTitle(mingGua.kua)}
+              groupText={kuaInfo.group === "east4" ? "東四命" : "西四命"}
+              element={kuaInfo.element}
+              guaYear={mingGua.guaYear}
+              uncertain={mingGua.boundaryUncertain}
+              lines={kuaInfo.trigramLines}
+              onDetail={() => openPanel("sectors")}
+            />
+          ) : (
+            <div className="person-card">請先建立人物</div>
+          )}
+
           <div className="status-strip">
-            <span className={`chip ${heading.state.quality === "valid" ? "good" : heading.state.quality === "uncertain" ? "warn" : "bad"}`}>
-              {manualMode
-                ? "手動"
-                : heading.state.quality === "valid"
-                  ? "感測✓"
-                  : heading.state.quality === "uncertain"
-                    ? "感測弱"
-                    : "無感測"}
+            <span className={`chip ${sensorChip.tone}`} title={sensorChip.title}>
+              {sensorChip.text}
             </span>
             <button
               className="chip chip-btn"
-              title="切換磁北／真北"
-              onClick={() =>
-                persist({ ...ls, settings: { ...ls.settings, northReference: ls.settings.northReference === "magnetic" ? "true" : "magnetic" } })
-              }
+              title="真北需要位置與磁偏角資料，尚未提供；目前一律以磁北為基準"
+              onClick={() => showToast("目前以磁北為基準；真北需要位置與磁偏角資料，尚未提供")}
             >
-              {ls.settings.northReference === "magnetic" ? "磁北" : "真北"}
+              磁北
             </button>
-            {camStatus !== "running" && (
+            {camStatus === "running" ? (
+              <span className="chip good">相機✓</span>
+            ) : (
               <button
-                className={`chip chip-btn ${camStatus === "denied" ? "warn" : ""}`}
-                title="重新啟動後置相機"
+                className={`chip chip-btn ${camStatus === "idle" ? "" : "warn"}`}
+                title={camStatus === "ended" ? "相機畫面已中斷，點此重新開啟後置相機" : "重新啟動後置相機"}
                 onClick={() => void startCamera()}
               >
-                {camStatus === "denied" ? "相機拒絕" : camStatus === "failed" ? "相機失敗" : "開啟相機"}
+                {camStatus === "denied"
+                  ? "相機拒絕"
+                  : camStatus === "failed"
+                    ? "相機失敗"
+                    : camStatus === "ended"
+                      ? "相機中斷"
+                      : "開啟相機"}
               </button>
             )}
-            {camStatus === "running" && <span className="chip good">相機✓</span>}
-            {lockedHeading !== null && <span className="chip warn">已鎖定</span>}
+            {offsetActive && (
+              <button className="chip chip-btn warn" title="已套用人工校正偏移，點此重新校正" onClick={() => void openCalibration()}>
+                偏移 {signedOffset(heading.manualOffsetDeg)}
+              </button>
+            )}
           </div>
 
-          {/* 羅盤 */}
           <div className="compass-wrap">
             {wheel ? (
               <BaguaDial
-                displayHeading={displayHeading}
+                displayHeading={viewHeading}
                 wheel={wheel}
+                activeDeg={stableSector}
                 highlightDeg={highlightDeg}
-                onSectorClick={(d) => {
-                  setHighlightDeg(d);
-                  setPanelTab("sectors");
-                }}
+                dimmed={degraded || kind === "stale"}
+                onSectorClick={onSectorClick}
               />
             ) : (
-              <p style={{ color: "var(--c-ink-soft)" }}>請先建立人物</p>
+              <div className="compass-empty">請先建立人物</div>
             )}
           </div>
 
-          {/* 底部狀態與操作 */}
           <div className="bottombar">
-            {heading.state.tiltDegraded && (
-              <div className="glass" style={{ padding: "8px 14px", textAlign: "center", color: "var(--c-bad-strong)", fontSize: 13 }}>
-                ⚠️ 手機接近垂直朝天／地，水平朝向不可靠，暫停吉凶判定
-              </div>
-            )}
-            {nearBoundary && !heading.state.tiltDegraded && (
-              <div className="glass" style={{ padding: "8px 14px", textAlign: "center", color: "#8a6d1f", fontSize: 13 }}>
-                ⚠️ 接近方位交界（距邊界 {boundaryDist?.toFixed(1)}°），吉凶可能跳動
-              </div>
-            )}
-            {/* 目前朝向與吉凶說明 */}
-            <div className="glass heading-card">
-              <div className="heading-card-main">
-                <span className="action-icon"><ActionIcon name="calibrate" /></span>
-                <div style={{ flex: 1 }}>
-                  <div className="heading-sub">
-                    目前朝向{lockedHeading !== null ? "（已鎖定）" : ""}
-                    {usingFallback && <span className="fallback-tag">示範方位・未取得感測</span>}
-                  </div>
-                  <div className="heading-big">
-                    {Math.round(displayHeading)}°
-                    <span className="heading-dir">
-                      {displaySector !== null ? PALACES.find((p) => p.deg === displaySector)?.branch : "—"}
-                    </span>
-                  </div>
-                </div>
-                {displayStar && (
-                  <span className={`heading-star-pill ${STARS[displayStar].luck === "good" ? "good" : STARS[displayStar].luck === "bad" ? "bad" : "neutral"}`}>
-                    {STAR_NAME[displayStar]}（{STARS[displayStar].luck === "good" ? "吉方" : STARS[displayStar].luck === "bad" ? "凶方" : "本命方"}）
-                  </span>
-                )}
-              </div>
-              <div className="heading-desc">
-                {usingFallback
-                  ? "尚未取得感測資料，目前示範北向。可點「切換羅盤」手動對準，或授予感測權限。"
-                  : displayStar
-                    ? STAR_DESC[displayStar]
-                    : "請確認感測器狀態或切換手動羅盤"}
-              </div>
-            </div>
-            <div className="action-row action-row-icon">
-              <button className="btn action-btn" onClick={async () => { await heading.requestPermission(); setShowCalibration(true); }}>
-                <span className="action-icon"><ActionIcon name="calibrate" /></span>
-                <span>校正指南針</span>
-              </button>
-              <button
-                className={`btn action-btn ${lockedHeading !== null ? "primary" : ""}`}
-                onClick={() => setLockedHeading(lockedHeading === null ? displayHeading : null)}
-              >
-                <span className="action-icon"><ActionIcon name={lockedHeading !== null ? "unlock" : "lock"} /></span>
-                <span>{lockedHeading !== null ? "解鎖方位" : "鎖定方位"}</span>
-              </button>
-              <button className="btn action-btn good" onClick={capture} disabled={pendingCapture || headingNow === null}>
-                <span className="action-icon"><ActionIcon name="camera" /></span>
-                <span>{pendingCapture ? "處理中…" : "拍照紀錄"}</span>
-              </button>
-              <button className="btn action-btn" onClick={() => setManualMode((m) => !m)}>
-                <span className="action-icon"><ActionIcon name="switch" /></span>
-                <span>{manualMode ? "返回感測" : "切換羅盤"}</span>
-              </button>
-            </div>
+            <HeadingCard
+              label="目前朝向"
+              degText={`${Math.round(normalizeDeg(viewHeading)) % 360}°`}
+              dirText={palace?.branch ?? "—"}
+              tags={tags}
+              pill={pill}
+              warn={warn}
+              desc={desc}
+              cta={cta}
+            />
             {manualMode && (
-              <>
+              <div className="manual-bar">
+                <button className="nudge" aria-label="減 1 度" onClick={() => setManualDeg((d) => normalizeDeg(d - 1))}>
+                  −1°
+                </button>
                 <input
                   type="range"
                   min={0}
                   max={359}
-                  value={Math.round(manualDeg)}
+                  value={Math.round(manualDeg) % 360}
                   onChange={(e) => setManualDeg(Number(e.target.value))}
                   aria-label="手動調整方位"
-                  style={{ accentColor: "#b08d4f" }}
                 />
-                <div className="manual-nudge">
-                  <button className="btn" onClick={() => setManualDeg((d) => normalize(d - 5))}>−5°</button>
-                  <button className="btn" onClick={() => setManualDeg((d) => normalize(d + 5))}>+5°</button>
-                </div>
-              </>
+                <button className="nudge" aria-label="加 1 度" onClick={() => setManualDeg((d) => normalizeDeg(d + 1))}>
+                  +1°
+                </button>
+              </div>
             )}
-            {/* 磁北／真北切換已置於上方狀態列 */}
+            <ActionRow actions={actions} />
           </div>
         </div>
 
-        {/* 寬螢幕側欄 */}
-        <aside className="side-panel glass">
-          <SidePanel
-            tab={panelTab}
-            setTab={setPanelTab}
-            person={currentPerson}
-            mingGua={mingGua}
-            wheel={wheel}
-            highlightDeg={highlightDeg}
-            setHighlightDeg={setHighlightDeg}
-            ls={ls}
-            selectPerson={selectPerson}
-            removePerson={removePerson}
-            addPerson={addPerson}
-            records={records}
-            photoUrls={photoUrls}
-            onExportZip={doExportZip}
-            onExportJson={doExportJson}
-            onExportOne={doExportOne}
-            onDeleteRecord={deleteRecordAndPhoto}
-          />
-        </aside>
+        <aside className="side-panel glass">{sidePanel}</aside>
       </div>
 
-      {/* 一般手機抽屜 */}
       {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
-      <div className={`drawer glass glass-strong ${drawerOpen ? "" : "closed"}`} aria-hidden={!drawerOpen}>
-        <div className="drawer-handle" />
-        <SidePanel
-          tab={panelTab}
-          setTab={setPanelTab}
-          person={currentPerson}
-          mingGua={mingGua}
-          wheel={wheel}
-          highlightDeg={highlightDeg}
-          setHighlightDeg={setHighlightDeg}
-          ls={ls}
-          selectPerson={(id) => { selectPerson(id); setDrawerOpen(false); }}
-          removePerson={removePerson}
-          addPerson={addPerson}
-          records={records}
-          photoUrls={photoUrls}
-          onExportZip={doExportZip}
-          onExportJson={doExportJson}
-          onExportOne={doExportOne}
-          onDeleteRecord={deleteRecordAndPhoto}
-        />
+      <div
+        className={`drawer glass glass-strong ${drawerOpen ? "" : "closed"}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="人物、命卦與紀錄"
+        aria-hidden={!drawerOpen}
+      >
+        <div className="drawer-head">
+          <button className="drawer-grab" aria-label="收合" onClick={() => setDrawerOpen(false)}>
+            <span className="drawer-handle" />
+          </button>
+          <button className="drawer-close" aria-label="關閉" onClick={() => setDrawerOpen(false)}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+            </svg>
+          </button>
+        </div>
+        {sidePanel}
       </div>
 
-      {/* 校正指南針：以已知方位設定偏移 */}
       {showCalibration && (
         <div className="modal-backdrop" onClick={() => setShowCalibration(false)}>
           <div className="modal glass glass-strong" onClick={(e) => e.stopPropagation()}>
             <h2>校正指南針</h2>
             <p>
-              將鏡頭水平對準已知方位後按下對應按鈕，系統會自動設定角度偏移（目前偏移 {Math.round(heading.manualOffsetDeg)}°）。
-              此動作僅補償感測基準，不保證完成硬體磁力計校正。
+              將鏡頭水平對準已知方位後，按下對應按鈕，系統會設定角度偏移（目前偏移 {signedOffset(heading.manualOffsetDeg)}）。
+              這只補償顯示基準，不保證完成硬體磁力計校正；金屬與電器旁的磁場也會影響方位。
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginTop: 12 }}>
-              {[
-                [0, "北"], [90, "東"], [180, "南"], [270, "西"],
-              ].map(([deg, label]) => (
-                <button
-                  key={deg as number}
-                  className="btn"
-                  onClick={() => {
-                    const h = headingNow ?? heading.state.displayHeading ?? 0;
-                    heading.setManualOffsetDeg(normalize((deg as number) - h));
-                    setShowCalibration(false);
-                    showToast(`已校正偏移：${label}＝${deg}°`);
-                  }}
-                >
+              {(
+                [
+                  [0, "北"],
+                  [90, "東"],
+                  [180, "南"],
+                  [270, "西"],
+                ] as Array<[number, string]>
+              ).map(([deg, label]) => (
+                <button key={deg} className="btn" onClick={() => calibrate(deg, label)}>
                   對準{label}
                 </button>
               ))}
@@ -640,7 +819,11 @@ export default function App() {
             <button
               className="btn"
               style={{ width: "100%", marginTop: 10 }}
-              onClick={() => { heading.setManualOffsetDeg(0); setShowCalibration(false); showToast("偏移已重置"); }}
+              onClick={() => {
+                heading.setManualOffsetDeg(0);
+                setShowCalibration(false);
+                showToast("偏移已重置");
+              }}
             >
               重置偏移
             </button>
@@ -649,383 +832,15 @@ export default function App() {
       )}
 
       {toast && (
-        <div
-          className="glass glass-strong"
-          style={{
-            position: "fixed",
-            bottom: "calc(var(--sab) + 84px)",
-            left: "50%",
-            transform: "translateX(-50%)",
-            padding: "10px 18px",
-            zIndex: 80,
-            fontSize: 13,
-            whiteSpace: "nowrap",
-          }}
-          role="status"
-        >
+        <div className="toast" role="status">
           {toast}
         </div>
       )}
-    </div>
-  );
-}
 
-function normalize(d: number): number {
-  return ((d % 360) + 360) % 360;
-}
-
-/** 操作列線條圖示（取代 emoji，風格一致） */
-function ActionIcon({ name }: { name: "calibrate" | "lock" | "unlock" | "camera" | "switch" }) {
-  const common = { width: 19, height: 19, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
-  switch (name) {
-    case "calibrate":
-      return <svg {...common}><circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="2" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>;
-    case "lock":
-      return <svg {...common}><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>;
-    case "unlock":
-      return <svg {...common}><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 7-2.6" /></svg>;
-    case "camera":
-      return <svg {...common}><path d="M3 8h4l1.5-2h7L17 8h4v11H3z" /><circle cx="12" cy="13.5" r="3.2" /></svg>;
-    case "switch":
-      return <svg {...common}><path d="M4 8h13l-3-3M20 16H7l3 3" /></svg>;
-  }
-}
-
-/* ---------- 側欄／抽屜共用面板 ---------- */
-
-interface SidePanelProps {
-  tab: PanelTab;
-  setTab: (t: PanelTab) => void;
-  person: Person | null;
-  mingGua: MingGuaResult | null;
-  wheel: Record<DirectionDeg, StarKey> | null;
-  highlightDeg: DirectionDeg | null;
-  setHighlightDeg: (d: DirectionDeg | null) => void;
-  ls: LSData;
-  selectPerson: (id: string) => void;
-  removePerson: (id: string) => void;
-  addPerson: (name: string, birthDate: string, birthTime: string | null, sex: "male" | "female") => Person;
-  records: PhotoRecordMeta[];
-  photoUrls: Record<string, string>;
-  onExportZip: () => void;
-  onExportJson: () => void;
-  onExportOne: (photoId: string) => void;
-  onDeleteRecord: (id: string) => void;
-}
-
-function SidePanel(p: SidePanelProps) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", gap: 6 }}>
-        {(
-          [
-            ["sectors", "命卦方位"],
-            ["persons", "人物"],
-            ["records", "紀錄"],
-          ] as Array<[PanelTab, string]>
-        ).map(([k, label]) => (
-          <button
-            key={k}
-            className={`btn ${p.tab === k ? "primary" : ""}`}
-            style={{ flex: 1, minHeight: 38, fontSize: 13 }}
-            onClick={() => p.setTab(k)}
-          >
-            {label}
-          </button>
-        ))}
+      {/* 給螢幕閱讀器：只在扇區改變時播報 */}
+      <div className="visually-hidden" role="status" aria-live="polite">
+        {trusted && star && palace ? `${palace.branch}方 ${STARS[star].name} ${isGoodStar(star) ? "吉方" : "凶方"}` : ""}
       </div>
-
-      {p.tab === "sectors" && (
-        <MingGuaPanel
-          person={p.person}
-          mingGua={p.mingGua}
-          wheel={p.wheel}
-          highlightDeg={p.highlightDeg}
-          onHighlight={p.setHighlightDeg}
-        />
-      )}
-
-      {p.tab === "persons" && (
-        <PersonPanel ls={p.ls} selectPerson={p.selectPerson} removePerson={p.removePerson} addPerson={p.addPerson} />
-      )}
-
-      {p.tab === "records" && (
-        <RecordsPanel
-          records={p.records}
-          photoUrls={p.photoUrls}
-          onExportZip={p.onExportZip}
-          onExportJson={p.onExportJson}
-          onExportOne={p.onExportOne}
-          onDelete={p.onDeleteRecord}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ---------- 人物面板 ---------- */
-
-function PersonPanel({
-  ls,
-  selectPerson,
-  removePerson,
-  addPerson,
-}: {
-  ls: LSData;
-  selectPerson: (id: string) => void;
-  removePerson: (id: string) => void;
-  addPerson: (name: string, birthDate: string, birthTime: string | null, sex: "male" | "female") => Person;
-}) {
-  const [showForm, setShowForm] = useState(false);
-  const [name, setName] = useState("");
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
-  const [sex, setSex] = useState<"male" | "female">("male");
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = () => {
-    if (!name.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      setErr("請填寫名稱與國曆生日（YYYY-MM-DD）");
-      return;
-    }
-    try {
-      addPerson(name.trim(), date, time || null, sex);
-      setShowForm(false);
-      setName("");
-      setDate("");
-      setTime("");
-      setErr(null);
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  };
-
-  return (
-    <div>
-      <div className="panel-title">人物（僅存本機）</div>
-      {ls.persons.map((person) => {
-        const info = KUA_TABLE[person.kua];
-        return (
-          <div
-            key={person.id}
-            className="glass"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 12px",
-              marginBottom: 8,
-              outline: person.id === ls.settings.currentPersonId ? "2px solid var(--c-gold)" : "none",
-            }}
-          >
-            <div style={{ flex: 1, cursor: "pointer" }} onClick={() => selectPerson(person.id)}>
-              <div style={{ fontFamily: "var(--font-serif)", fontWeight: 600 }}>{person.name}</div>
-              <div style={{ fontSize: 12, color: "var(--c-ink-soft)" }}>
-                {person.birthDate}・{info.name}命{info.group === "east4" ? "・東四" : "・西四"}
-              </div>
-            </div>
-            <button className="btn" style={{ minHeight: 32, padding: "4px 10px", fontSize: 12 }} onClick={() => removePerson(person.id)}>
-              刪除
-            </button>
-          </div>
-        );
-      })}
-      {!showForm && (
-        <button className="btn primary" style={{ width: "100%" }} onClick={() => setShowForm(true)}>
-          ＋ 新增人物
-        </button>
-      )}
-      {showForm && (
-        <div className="glass" style={{ padding: 12 }}>
-          <div className="field">
-            <label>名稱</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：媽媽" />
-          </div>
-          <div className="field">
-            <label>國曆生日（必填）</label>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>出生時間（選填，立春臨界建議填）</label>
-            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>性別</label>
-            <select value={sex} onChange={(e) => setSex(e.target.value as "male" | "female")}>
-              <option value="male">男</option>
-              <option value="female">女</option>
-            </select>
-          </div>
-          <div style={{ fontSize: 12, color: "var(--c-ink-soft)", marginBottom: 8 }}>
-            年界以立春交節時刻判定（時區：Asia/Taipei）
-          </div>
-          {err && <div style={{ color: "var(--c-bad-strong)", fontSize: 13, marginBottom: 8 }}>{err}</div>}
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn good" style={{ flex: 1 }} onClick={submit}>確認</button>
-            <button className="btn" onClick={() => setShowForm(false)}>取消</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------- 紀錄面板 ---------- */
-
-function RecordsPanel({
-  records,
-  photoUrls,
-  onExportZip,
-  onExportJson,
-  onExportOne,
-  onDelete,
-}: {
-  records: PhotoRecordMeta[];
-  photoUrls: Record<string, string>;
-  onExportZip: () => void;
-  onExportJson: () => void;
-  onExportOne: (photoId: string) => void;
-  onDelete: (id: string) => void;
-}) {
-  return (
-    <div>
-      <div className="panel-title">拍照紀錄（{records.length}）</div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        <button className="btn" style={{ flex: 1, fontSize: 12 }} onClick={onExportJson}>匯出 JSON</button>
-        <button className="btn primary" style={{ flex: 1, fontSize: 12 }} onClick={onExportZip}>匯出 ZIP</button>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--c-ink-soft)", marginBottom: 10 }}>
-        ⚠️ 此版本僅供匯出保存，不支援匯入還原
-      </div>
-      {records.map((r) => (
-        <div key={r.id} className="glass" style={{ display: "flex", gap: 10, padding: 10, marginBottom: 8, alignItems: "center" }}>
-          {photoUrls[r.photoId] ? (
-            <img src={photoUrls[r.photoId]} alt={r.title} style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8 }} />
-          ) : (
-            <div style={{ width: 56, height: 56, borderRadius: 8, background: "var(--c-cream-2)" }} />
-          )}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{r.title}</div>
-            <div style={{ fontSize: 11, color: "var(--c-ink-soft)" }}>
-              {new Date(r.capturedAt).toLocaleString()}・{Math.round(r.azimuthDisplay)}°・{r.palace}・
-              <span className={`star-${STARS[r.star as StarKey]?.luck ?? "neutral"}`}>{STAR_NAME[r.star as StarKey] ?? r.star}</span>
-            </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <button className="btn" style={{ minHeight: 28, padding: "2px 8px", fontSize: 11 }} onClick={() => onExportOne(r.photoId)}>
-              分享
-            </button>
-            <button className="btn" style={{ minHeight: 28, padding: "2px 8px", fontSize: 11 }} onClick={() => onDelete(r.id)}>
-              刪除
-            </button>
-          </div>
-        </div>
-      ))}
-      {records.length === 0 && <p style={{ fontSize: 13, color: "var(--c-ink-soft)" }}>尚無紀錄</p>}
-    </div>
-  );
-}
-
-/* ---------- 引導頁 ---------- */
-
-function OnboardingScreen({
-  onFinish,
-  onAddPerson,
-  personCount,
-  onRequestPerm,
-  caps,
-}: {
-  onFinish: () => void;
-  onAddPerson: (name: string, birthDate: string, birthTime: string | null, sex: "male" | "female") => Person;
-  personCount: number;
-  onRequestPerm: () => Promise<void>;
-  caps: ReturnType<typeof detectCapabilities>;
-}) {
-  const [step, setStep] = useState(0);
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "var(--c-cream)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 16 }}>
-      <div style={{ fontFamily: "var(--font-serif)", fontSize: 28, fontWeight: 700 }}>BaziGFun</div>
-      <div style={{ fontSize: 13, color: "var(--c-ink-soft)" }}>禪意八宅實景羅盤 v{APP_VERSION}</div>
-      <div className="glass" style={{ maxWidth: 420, width: "100%", padding: 20 }}>
-        {step === 0 && (
-          <>
-            <h2 style={{ fontFamily: "var(--font-serif)" }}>1・建立人物</h2>
-            <p>先建立量測對象（資料只存在這台裝置，不會上傳）。</p>
-            <PersonPanelCompact onAdd={onAddPerson} count={personCount} />
-          </>
-        )}
-        {step === 1 && (
-          <>
-            <h2 style={{ fontFamily: "var(--font-serif)" }}>2・權限與感測</h2>
-            <p>
-              接下來會請求「動作與方向」感測器權限與相機權限。取得後即可用實景羅盤量測八方吉凶。
-              {!caps.isSecureContext && " ⚠️ 目前非 HTTPS，感測器與相機可能無法使用。"}
-            </p>
-            <button className="btn primary" style={{ width: "100%" }} onClick={() => onRequestPerm().then(() => setStep(2))}>
-              請求權限
-            </button>
-          </>
-        )}
-        {step === 2 && (
-          <>
-            <h2 style={{ fontFamily: "var(--font-serif)" }}>3・開始量測</h2>
-            <p>手持手機水平，確認上方感測狀態為「感測✓」後，抬起鏡頭對準要測的方向。方位可隨時切手動模式校正。</p>
-            <button className="btn good" style={{ width: "100%" }} onClick={onFinish}>
-              進入羅盤
-            </button>
-          </>
-        )}
-      </div>
-      {step === 0 && personCount > 0 && (
-        <button className="btn" onClick={() => setStep(1)}>下一步 →</button>
-      )}
-    </div>
-  );
-}
-
-function PersonPanelCompact({
-  onAdd,
-  count,
-}: {
-  onAdd: (name: string, birthDate: string, birthTime: string | null, sex: "male" | "female") => Person;
-  count: number;
-}) {
-  const [name, setName] = useState("");
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
-  const [sex, setSex] = useState<"male" | "female">("male");
-  return (
-    <div>
-      <div className="field">
-        <label>名稱</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：自己" />
-      </div>
-      <div className="field">
-        <label>國曆生日</label>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-      </div>
-      <div className="field">
-        <label>出生時間（選填）</label>
-        <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
-      </div>
-      <div className="field">
-        <label>性別</label>
-        <select value={sex} onChange={(e) => setSex(e.target.value as "male" | "female")}>
-          <option value="male">男</option>
-          <option value="female">女</option>
-        </select>
-      </div>
-      <button
-        className="btn primary"
-        style={{ width: "100%" }}
-        onClick={() => {
-          if (name.trim() && date) {
-            onAdd(name.trim(), date, time || null, sex);
-          }
-        }}
-      >
-        建立（已有 {count} 人）
-      </button>
     </div>
   );
 }

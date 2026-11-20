@@ -1,8 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./app/App";
-import "../src/styles/theme.css";
-import "./vite-env.d.ts";
+import "./styles/base.css";
+import "./styles/screen.css";
+import "./styles/panels.css";
 
 // 註冊 PWA Service Worker
 if ("serviceWorker" in navigator) {

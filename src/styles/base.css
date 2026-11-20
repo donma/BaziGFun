@@ -1,0 +1,120 @@
+/**
+ * 基礎：字體、設計 token、重置、無障礙。
+ *
+ * 字體策略（解決「毛邊」）：
+ * 1) 顯示用襯線體內嵌 Noto Serif TC Bold 子集（SIL OFL），三平台一致、離線可用。
+ * 2) 字體堆疊最後一律落到無襯線體，**不使用泛用 serif**——
+ *    Windows 的 serif 會落到細明體（MingLiU），小字級＋粗體很糊。
+ * 3) font-synthesis: none，禁止瀏覽器偽造粗體／斜體（偽粗體邊緣會糊）。
+ */
+
+@font-face {
+  font-family: "BZ Serif";
+  src: url("../assets/fonts/bz-serif-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  /* 禪意色票 */
+  --c-cream: #f6f1e7;
+  --c-cream-2: #efe7d6;
+  --c-ink: #3d3423;
+  --c-ink-soft: #6b5f45;
+  --c-gold: #b08d4f;
+  --c-gold-bright: #e3c982;
+  --c-line: #c9b98f;
+
+  /* 吉凶 */
+  --c-good: #7a9a6d;
+  --c-good-strong: #3f8a45;
+  --c-good-deep: #2b6a33;
+  --c-bad: #b56a5c;
+  --c-bad-strong: #b8402f;
+  --c-bad-deep: #a3342a;
+
+  /* 玻璃卡（淺色面板用） */
+  --glass-bg: rgba(246, 241, 231, 0.78);
+  --glass-bg-strong: rgba(246, 241, 231, 0.93);
+  --glass-border: rgba(176, 141, 79, 0.38);
+  --glass-blur: 14px;
+
+  /* 字體 */
+  --font-serif: "BZ Serif", "Songti TC", "Noto Serif CJK TC", "Source Han Serif TC", "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+  --font-sans: "PingFang TC", "Noto Sans TC", "Noto Sans CJK TC", "Microsoft JhengHei", "Heiti TC", system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+
+  /* safe-area */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+
+  --radius: 18px;
+  --radius-sm: 12px;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  color: var(--c-ink);
+  background: var(--c-cream);
+  overscroll-behavior: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+  font-synthesis: none;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 700;
+}
+
+.serif {
+  font-family: var(--font-serif);
+  font-weight: 700;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

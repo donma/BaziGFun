@@ -9,6 +9,14 @@ export type NorthReference = "magnetic" | "true";
 export type HeadingSource = "sensor" | "manual";
 export type Quality = "valid" | "uncertain" | "unavailable";
 
+/**
+ * 方位資料來源語義：
+ * - webkit-compass：iOS `webkitCompassHeading`（磁北；直立時視為鏡頭朝向，**需實機標定**）
+ * - absolute-euler：`deviceorientationabsolute`／absolute=true 的歐拉角，經姿態幾何換算（磁北）
+ * - relative-euler：相對任意起點的歐拉角（非絕對方位，必須人工校正才有意義）
+ */
+export type HeadingSemantic = "webkit-compass" | "absolute-euler" | "relative-euler";
+
 export interface HeadingState {
   /** 原始測量值（未平滑），度 0–360 */
   rawHeading: number | null;
@@ -19,15 +27,18 @@ export interface HeadingState {
   northReference: NorthReference;
   source: HeadingSource;
   quality: Quality;
+  /** 資料語義；null＝尚無樣本 */
+  semantic: HeadingSemantic | null;
   /** 距最近扇區邊界的角度 */
   boundaryDistance: number | null;
   /** 距邊界過近，吉凶交界提示 */
   nearBoundary: boolean;
   /** 水平投影退化（鏡頭近垂直朝天/地） */
   tiltDegraded: boolean;
-  /** pitch（度，0=水平，正=朝天） */
+  /** 鏡頭仰角（度，0=水平，+90=朝天，−90=朝地） */
+  elevation: number | null;
+  /** beta／gamma 原始值（診斷用） */
   pitch: number | null;
-  /** roll（度） */
   roll: number | null;
 }
 
@@ -68,32 +79,33 @@ export class CircularLowPass {
   }
 }
 
-/** 吉凶遲滯器：扇區切換需越過邊界 + hysteresis 度才更新，避免 UI 閃爍 */
+/**
+ * 吉凶遲滯器：避免 UI 在兩扇區交界附近閃爍。
+ *
+ * 判定依據是「角度離目前顯示扇區中心多遠」：仍在 22.5° ＋ 遲滯帶內就保持原扇區；
+ * 超出才切換。這樣
+ * - 交界附近小幅抖動不會閃爍（只在越過遲滯帶後才切換，回頭也一樣）；
+ * - 一次跨好幾個扇區的快速轉動（掉幀、甩動）會立即切到正確扇區，
+ *   不會因為「新角度剛好靠近它自己扇區的邊界」而錯誤留在很遠的舊扇區。
+ */
 export class SectorHysteresis {
   private current: DirectionDeg | null = null;
   constructor(private hysteresisDeg = 1.5) {}
-  /**
-   * @param heading 顯示角度
-   * @param lastStable 上一次穩定輸出（null 起始）
-   * @returns 穩定後的扇區中心角
-   */
-  update(heading: number): { sector: DirectionDeg | null; changed: boolean; forced: boolean } {
+
+  update(heading: number): { sector: DirectionDeg | null; changed: boolean } {
     const raw = sectorCenterDeg(heading);
-    if (raw === null) return { sector: this.current, changed: false, forced: false };
+    if (raw === null) return { sector: this.current, changed: false };
     if (this.current === null) {
       this.current = raw;
-      return { sector: raw, changed: true, forced: false };
+      return { sector: raw, changed: true };
     }
-    if (raw === this.current) return { sector: this.current, changed: false, forced: false };
-    // 需越過邊界 hysteresisDeg 才切換
-    const dist = boundaryDistanceDeg(heading);
-    if (dist <= this.hysteresisDeg) {
-      // 在遲滯帶內，保持
-      return { sector: this.current, changed: false, forced: false };
+    if (raw === this.current) return { sector: this.current, changed: false };
+    // 仍在目前扇區（含遲滯帶）內 → 保持；UI 另會顯示「接近交界」提示，不默默偽裝成已確定
+    if (Math.abs(shortestAngleDiff(heading, this.current)) <= 22.5 + this.hysteresisDeg) {
+      return { sector: this.current, changed: false };
     }
-    const prev = this.current;
     this.current = raw;
-    return { sector: raw, changed: true, forced: false, ...{} as { prev?: DirectionDeg }, prev } as { sector: DirectionDeg | null; changed: boolean; forced: boolean; prev?: DirectionDeg };
+    return { sector: raw, changed: true };
   }
   reset(): void {
     this.current = null;
@@ -108,31 +120,46 @@ export function boundaryDistanceDeg(deg: number): number {
   return boundaryDistanceDegImpl(deg);
 }
 
-/** 鏡頭近垂直（朝天或朝地）時水平投影退化 */
-export function isTiltDegraded(pitchDeg: number, rollDeg: number): boolean {
-  const p = Math.abs(pitchDeg);
-  return p > 60;
+const D2R = Math.PI / 180;
+
+/**
+ * 後置鏡頭視線向量（地球座標：x=東、y=北、z=上）。
+ * 依 W3C DeviceOrientation 旋轉順序 R = Rz(α)·Rx(β)·Ry(γ)；
+ * 裝置 z 軸（垂直螢幕朝向使用者）在地球座標為 R·ẑ，後置鏡頭看向其反方向。
+ * 此向量與螢幕轉向（直式／橫式）無關，因為鏡頭固定在機身上。
+ */
+export function cameraLookVector(alphaDeg: number, betaDeg: number, gammaDeg: number): { x: number; y: number; z: number } {
+  const a = alphaDeg * D2R;
+  const b = betaDeg * D2R;
+  const g = gammaDeg * D2R;
+  const zx = Math.sin(g) * Math.cos(a) + Math.cos(g) * Math.sin(b) * Math.sin(a);
+  const zy = Math.sin(g) * Math.sin(a) - Math.cos(g) * Math.sin(b) * Math.cos(a);
+  const zz = Math.cos(g) * Math.cos(b);
+  return { x: -zx, y: -zy, z: -zz };
 }
 
-/** 由 DeviceOrientation 原始值換算相機水平朝向（後置鏡頭）。
- *  iOS webkitCompassHeading 已是「裝置頂部朝向」的指南針值（直立、鏡頭朝前時）。
- *  當裝置姿態改變（pitch/roll），需要幾何補償：
- *  heading_cam = compassHeading + screenOrientation 語義校正（此處簡化：webkit 已含螢幕校正）
+/** 鏡頭仰角（度）：0＝水平，+90＝正上方，−90＝正下方。只需 beta/gamma。 */
+export function cameraElevationDeg(betaDeg: number, gammaDeg: number): number {
+  const up = -Math.cos(betaDeg * D2R) * Math.cos(gammaDeg * D2R);
+  return Math.asin(Math.max(-1, Math.min(1, up))) / D2R;
+}
+
+/**
+ * 由歐拉角換算相機「水平朝向」（順時針自北，0–360）。
+ * 鏡頭近乎垂直（水平投影過短）時回傳 null，不硬給一個不可靠的數字。
  */
-export function computeCameraAzimuth(
-  compassHeading: number,
-  alpha: number | null,
-  screenOrientationDeg: number,
-  useWebkit: boolean,
-): number {
-  if (useWebkit) {
-    // webkitCompassHeading：與 window.orientation 對齊的「北與裝置頂方向夾角」
-    // 相機朝向 = webkitCompassHeading（後置鏡頭與裝置頂同向）
-    return normalizeDeg(compassHeading);
-  }
-  // 標準 alpha：逆時針，且需螢幕方向校正
-  if (alpha === null) return NaN;
-  return normalizeDeg(360 - alpha - screenOrientationDeg);
+export function cameraHeadingFromEuler(alphaDeg: number, betaDeg: number, gammaDeg: number): number | null {
+  const v = cameraLookVector(alphaDeg, betaDeg, gammaDeg);
+  if (Math.hypot(v.x, v.y) < 1e-3) return null;
+  return normalizeDeg(Math.atan2(v.x, v.y) / D2R);
+}
+
+/** 鏡頭仰角超過此值（度）視為朝天／朝地，水平朝向不可靠 */
+export const TILT_DEGRADED_ELEVATION_DEG = 65;
+
+/** 鏡頭近垂直（朝天或朝地）時水平投影退化；橫式握持（gamma≈±90）不應被誤判 */
+export function isCameraNearVertical(elevationDeg: number): boolean {
+  return Math.abs(elevationDeg) > TILT_DEGRADED_ELEVATION_DEG;
 }
 
 /** 磁北 ↔ 真北換算（declination = 真北 - 磁北，東偏為正） */
