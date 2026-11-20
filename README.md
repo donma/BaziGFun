@@ -278,7 +278,17 @@ Tests      28 passed (28)
 
 ## 部署
 
-**Cloudflare Pages**
+### GitHub Pages（本專案已設定）
+
+`.github/workflows/deploy.yml` 在每次 push 到 `main` 時自動 `npm ci` → `npm run build` → 部署 `dist/`。
+
+**一次性設定**：到 repo 的 `Settings → Pages → Build and deployment`，把 **Source 設為「GitHub Actions」**（不要選「Deploy from a branch／main」，否則 Pages 會直接提供未編譯的 `index.html`，瀏覽器載入 `/src/main.tsx` 而顯示空白頁）。
+
+完成後網址：`https://donma.github.io/BaziGFun/`
+
+> `vite.config.ts` 已設定 `base: "/BaziGFun/"`，manifest 的 `start_url`／`scope` 與 Service Worker 的 `navigateFallback` 也一併指向子路徑。
+
+### Cloudflare Pages
 
 ```bash
 npm run build
