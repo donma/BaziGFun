@@ -154,8 +154,10 @@ export default function App() {
       setCamStatus(name === "NotAllowedError" ? "denied" : "failed");
       showToast(
         name === "NotAllowedError"
-          ? "相機權限被拒絕，可改用手動羅盤模式"
-          : "相機無法啟動，可改用手動羅盤模式",
+          ? "相機權限被拒絕：請在瀏覽器網址列允許相機，或改用手動羅盤"
+          : name === "NotFoundError"
+            ? "找不到可用相機（此裝置可能沒有後置鏡頭）"
+            : "相機無法啟動：請確認使用 HTTPS 與 Safari/Chrome，或改用手動羅盤",
       );
     }
   }, [showToast]);
@@ -165,18 +167,25 @@ export default function App() {
     setCamStatus("idle");
   }, []);
 
-  // 頁面隱藏時暫停相機與感測（規格 8）
+  // 進入羅盤即啟動相機（重新開啟 App 時不再依赖引導流程）
+  useEffect(() => {
+    if (screen === "compass" && camStatus === "idle") {
+      void startCamera();
+    }
+  }, [screen, camStatus, startCamera]);
+
+  // 頁面隱藏時暫停相機；回到前景時重新啟動（規格 8）
   useEffect(() => {
     const onVis = () => {
       if (document.hidden) {
         stopCamera();
-      } else if (screen === "compass" && camRef.current?.state !== "running" && camStatus === "running") {
-        startCamera();
+      } else if (screen === "compass") {
+        void startCamera(); // 已在運行時 internally 直接返回
       }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [screen, camStatus, startCamera, stopCamera]);
+  }, [screen, startCamera, stopCamera]);
 
   const persist = useCallback((next: LSData) => {
     setLs(next);
@@ -438,6 +447,16 @@ export default function App() {
             >
               {ls.settings.northReference === "magnetic" ? "磁北" : "真北"}
             </button>
+            {camStatus !== "running" && (
+              <button
+                className={`chip chip-btn ${camStatus === "denied" ? "warn" : ""}`}
+                title="重新啟動後置相機"
+                onClick={() => void startCamera()}
+              >
+                {camStatus === "denied" ? "相機拒絕" : camStatus === "failed" ? "相機失敗" : "開啟相機"}
+              </button>
+            )}
+            {camStatus === "running" && <span className="chip good">相機✓</span>}
             {lockedHeading !== null && <span className="chip warn">已鎖定</span>}
           </div>
 
