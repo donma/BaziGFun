@@ -877,4 +877,11 @@
     padding: 16px;
     color: var(--c-ink);
   }
+
+  /* 底部暗色墊底要貼在「上半螢幕」的下緣（圓形按鈕的文字在那裡），
+     而不是整個視窗（＝下半螢幕）的下緣，否則按鈕文字在亮背景上會看不清楚 */
+  .scene-scrim.bottom {
+    bottom: var(--seg-pad-bottom);
+    height: 150px;
+  }
 }
