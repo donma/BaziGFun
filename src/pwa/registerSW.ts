@@ -1,61 +1,37 @@
-/** Service Worker 註冊與版本更新提示（vite-plugin-pwa） */
+/**
+ * Service Worker 註冊與版本更新（vite-plugin-pwa）。
+ *
+ * 採用 registerType: "autoUpdate"：新版 SW 在背景下載、快取完成後，
+ * 由 SW 自己 skipWaiting + clientsClaim 接管，外掛的 activated 事件再自動 reload。
+ *
+ * 為什麼不用 "prompt" + 頁面上一個「更新」按鈕：
+ *   舊寫法只呼叫 location.reload()，但新版 SW 還卡在 waiting，重載後仍是舊版，
+ *   提示一直重複出現，使用者得手動刷好幾次。更麻煩的是「先有雞還是先有蛋」——
+ *   已卡在舊版提示的使用者，點按鈕跑的還是舊邏輯，修正版永遠輪不到生效。
+ *   autoUpdate 把更新動作放在 SW 端，連還沒更新的舊頁面也會被新 SW 接管並重載，
+ *   不需要依賴頁面上的任何按鈕。它不是「每次進頁面就強制換頁」：只有在新版
+ *   已完整下載快取好之後才更新一次。
+ */
 import { registerSW } from "virtual:pwa-register";
 
-const BAR_ID = "bz-update-bar";
+let forceUpdate: (() => Promise<void>) | null = null;
 
 export function registerSWWithUpdatePrompt(): void {
-  // registerSW 回傳的 updateSW 會送 SKIP_WAITING 給等待中的新 SW；
-  // 新 SW 接管時（controlling 事件）外掛才會自動 reload。
-  // 只呼叫 location.reload() 是不夠的：新 SW 仍卡在 waiting，重載後還是舊版，提示會一直出現。
-  const updateSW = registerSW({
+  const update = registerSW({
     onNeedRefresh() {
-      document.getElementById(BAR_ID)?.remove();
-      const bar = document.createElement("div");
-      bar.id = BAR_ID;
-      bar.setAttribute("role", "status");
-      bar.style.cssText =
-        "position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);" +
-        // 摺疊雙螢幕時只置中在第一螢幕，不跨鉸鏈
-        "left:calc((100vw - var(--seg-pad-right,0px)) / 2);transform:translateX(-50%);" +
-        "z-index:999;background:#3d3423;color:#f6f1e7;padding:6px 8px 6px 16px;border-radius:999px;" +
-        "font-size:13px;display:flex;gap:10px;align-items:center;cursor:pointer;" +
-        "box-shadow:0 3px 14px rgba(0,0,0,0.4);";
-      const label = document.createElement("span");
-      label.textContent = "有新版本可用";
-      label.style.cssText = "white-space:nowrap;";
-      const btn = document.createElement("button");
-      btn.textContent = "更新";
-      btn.style.cssText =
-        "border:none;background:#f6f1e7;color:#3d3423;border-radius:999px;" +
-        "padding:0 16px;min-height:44px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;";
-      let updating = false;
-      const apply = async () => {
-        if (updating) return;
-        updating = true;
-        btn.textContent = "更新中…";
-        btn.disabled = true;
-        try {
-          await updateSW();
-        } catch {
-          location.reload(); // 送訊息失敗時至少重載一次
-          return;
-        }
-        // 外掛在新 SW 接管時會自動 reload；若 2 秒內沒發生（少數瀏覽器語義差異），自行重載。
-        // 若外掛已 reload，整頁（含此 timer）都已消失，不會有雙重重載。
-        setTimeout(() => location.reload(), 2000);
-      };
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        void apply();
-      };
-      bar.onclick = () => void apply(); // 整條提示都可點，避免小按鈕按不到
-      bar.append(label, btn);
-      document.body.appendChild(bar);
+      // autoUpdate 模式下理論上不會觸發；保留為保險：若真的出現，立刻更新，不讓舊提示卡住使用者
+      void update();
     },
     onOfflineReady() {
       console.info("[BaziGFun] 離線快取完成，可離線使用");
     },
   });
+  forceUpdate = update;
+}
+
+/** 手動強制更新（供未來需要時使用；autoUpdate 下通常不需呼叫） */
+export function requestUpdate(): Promise<void> {
+  return forceUpdate ? forceUpdate() : Promise.resolve();
 }
 
 export { registerSW };

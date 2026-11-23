@@ -140,7 +140,7 @@ npm run preview        # 預覽含 SW 的正式版本（http://localhost:4173/Ba
 npm run test:layout    # 14 種視窗／摺疊情境 × 多種狀態的版面檢查（+ 截圖到 scripts/.cache/shots）
 npm run test:sensor    # 用 Chrome／Edge 的方向感測模擬驗證陀螺儀 → 方位 → 吉凶全鏈路
 npm run test:camera    # 相機串流與生命週期、拍照（JPEG／紀錄）、照片詳情、匯出 ZIP
-npm run test:sw        # SW 更新流程：提示出現 → 點更新 → 新 SW 接管 → 重載 → 提示消失
+npm run test:sw        # SW 更新流程：新版背景安裝 → SW 自行接管 → 自動重載（不需按鈕、不卡 waiting）
 
 npm run fonts          # 重新產生內嵌字體子集（改了介面文字時執行）
 npm run icons          # 重新產生 PWA 圖示
@@ -315,7 +315,7 @@ scripts/
 ## 離線 PWA 與隱私
 
 - `vite-plugin-pwa` `generateSW`：預先快取 App Shell、CSS、JS、圖示、內嵌字體與服務工作人員（15 個項目、約 390 KiB）。
-- 首次快取完成才提示離線可用；「有新版本可用」採非強制更新提示，避免舊 bundle 與新資料結構衝突。點整條提示（或「更新」鈕）會呼叫 `registerSW` 回傳的 `updateSW()` 送 `SKIP_WAITING` 給等待中的新 SW，新 SW 接管後自動重載——**不是只呼叫 `location.reload()`**（那樣新 SW 仍卡在 waiting，重載後還是舊版，提示會一直出現、看似「點了沒反應」）。摺疊雙螢幕時提示只置中在第一螢幕；此流程有 `npm run test:sw` 實測。
+- 首次快取完成才提示離線可用；版本更新採用 **autoUpdate**：新版在背景下載快取完成後由 SW 自行接管並自動重載一次，**不需要、也不會出現「有新版本可用」按鈕**（舊的按鈕寫法會卡在 waiting 狀態、重載後仍是舊版，讓使用者得手動刷好幾次，且有「舊頁面跑舊按鈕邏輯」的死結）。不是每次進頁面就強制換頁：只有在新版已完整快取好才更新。此流程有 `npm run test:sw` 實測。
 - 離線可：選人物、算八宅、看本機照片、拍照、手動或可用感測羅盤、JSON＋照片匯出。
 - 不保證相機／感測器權限離線必然可取得，以裝置實測為準。
 - 無後端 API、無帳號、無第三方分析 SDK；相機影格、出生資料、照片不離開裝置。

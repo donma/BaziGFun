@@ -1,13 +1,11 @@
 /**
  * Service Worker 更新流程實測（對 preview 伺服器，需先 npm run build && npm run preview）。
  *
- * 驗證「有新版本可用 → 點更新 → 新 SW 接管 → 頁面重載 → 提示消失」整條鏈路。
- * 這正是之前出問題的地方：舊寫法只呼叫 location.reload()，但新 SW 還卡在 waiting，
- * 重載後還是舊版、提示又出現，看起來像「點了沒反應」。正確做法要呼叫 registerSW 回傳的
- * updateSW() 送 SKIP_WAITING。
+ * 驗證 autoUpdate 行為：修改 dist/sw.js 冒充「新版 SW」→ registration.update() →
+ * 新版 SW 在背景下載完成後自行 skipWaiting + clientsClaim 接管 → 外掛自動 reload →
+ * 頁面載入新版。全程不需要使用者點任何按鈕（也不會出現「有新版本可用」提示）。
+ * 這同時驗證了「先有雞還是先有蛋」已解決：連還在跑舊程式的頁面也會被新 SW 接管。
  *
- * 測試方式：修改 dist/sw.js 的位元組（插註解，precache 內容不變）冒充「新版 SW」，
- * 觸發 registration.update()，等提示出現後點擊，確認真的 reload 且提示消失。
  * 結束時（含例外）會還原原本的 sw.js。
  *
  * 用法：npm run test:sw   （--url=<preview 網址>；預設 http://localhost:4173/BaziGFun/）
@@ -31,8 +29,12 @@ const line = (ok, msg) => {
 };
 
 const original = readFileSync(SW_PATH);
+const originalText = original.toString("utf8");
 let browser;
 try {
+  // 先確認建置出來的是 autoUpdate（SW 含 skipWaiting + clientsClaim）
+  line(/skipWaiting/.test(originalText) && /clientsClaim/.test(originalText), "SW 為 autoUpdate（含 skipWaiting + clientsClaim）");
+
   browser = await chromium.launch({ executablePath: requireBrowser(), headless: true, args: browserArgs() });
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "zh-TW" });
   const page = await ctx.newPage();
@@ -42,43 +44,36 @@ try {
   });
 
   await page.goto(URL, { waitUntil: "networkidle" });
-  // Workbox 未開 clientsClaim：SW 安裝後需 reload 一次才接管
   await page.evaluate(() => navigator.serviceWorker.ready);
-  await page.reload({ waitUntil: "networkidle" });
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 });
   line(true, `SW 已安裝並接管（navigation ${navigations}）`);
 
-  // 冒充新版 SW
+  // 沒有新版本時，重新載入不應造成無限更新迴圈
+  const beforeIdle = navigations;
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(1500);
+  line(navigations === beforeIdle + 1, `一般重新載入不會觸發額外自動更新（navigation ${beforeIdle} → ${navigations}，應只 +1）`);
+
+  // 冒充新版：改 sw.js 位元組（加註解）。autoUpdate 下新版會自己接管，不需按鈕。
   writeFileSync(SW_PATH, Buffer.concat([Buffer.from("/* test-update */\n"), original]));
+  const before = navigations;
   await page.evaluate(async () => {
     const r = await navigator.serviceWorker.getRegistration();
     await r.update();
   });
-  await page.waitForSelector("#bz-update-bar", { timeout: 15000 });
-  const barText = (await page.locator("#bz-update-bar").innerText()).replace(/\s+/g, " ");
-  line(barText.includes("有新版本可用") && barText.includes("更新"), `更新提示出現：「${barText}」`);
 
-  // 點整條提示（實測整條可點，不限小按鈕）
-  const before = navigations;
-  await page.locator("#bz-update-bar").click();
-  const sawUpdating = await page
-    .waitForFunction(() => document.querySelector("#bz-update-bar button")?.textContent?.includes("更新中"), null, { timeout: 5000 })
-    .then(() => true)
-    .catch(() => false);
-  console.log(`ℹ 點擊後观察到「更新中…」回饋：${sawUpdating ? "是" : "否（reload 太快，一閃而過）"}`);
+  // 等新版 SW 接管並自動 reload（framenavigated 計數增加）
+  const deadline = Date.now() + 12000;
+  while (navigations <= before && Date.now() < deadline) await page.waitForTimeout(200);
+  line(navigations > before, `新版 SW 接管後自動重載（navigation ${before} → ${navigations}），不需點任何按鈕`);
 
-  // 等 reload（外掛的 controlling 事件，或 2 秒 fallback）
-  await page
-    .waitForFunction(() => !document.getElementById("bz-update-bar"), null, { timeout: 12000 })
-    .catch(() => {});
-  await page.waitForTimeout(500);
-  const barGone = (await page.locator("#bz-update-bar").count()) === 0;
-  line(navigations > before, `點擊後確實重載（navigation ${before} → ${navigations}）`);
-  line(barGone, "重載後更新提示消失（新 SW 已生效，不會再跳出來）");
+  // 不應該出現「有新版本可用」的卡住提示
+  const stuck = await page.evaluate(() => !!document.getElementById("bz-update-bar"));
+  line(!stuck, "沒有卡住的「有新版本可用」提示");
 } catch (e) {
   line(false, `執行失敗：${e.message}`);
 } finally {
-  writeFileSync(SW_PATH, original); // 一定要還原，避免污染 dist
+  writeFileSync(SW_PATH, original);
   if (browser) await browser.close();
 }
 

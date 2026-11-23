@@ -8,7 +8,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "prompt",
+      // 新版 SW 在背景安裝完成後就自動 skipWaiting + clientsClaim 並由外掛自動 reload，
+      // 不必依賴頁面上的舊按鈕（否則使用者卡在舊版提示時，點「更新」只會 reload 到舊版）。
+      // register.js 的 activated 事件（isUpdate）會自動 location.reload()，仍是非強制：
+      // 只在新版「已完全快取好了」才更新，不是每次進頁面就強制換頁。
+      registerType: "autoUpdate",
       includeAssets: ["favicon.svg"],
       manifest: {
         name: "BaziGFun 八宅羅盤",
