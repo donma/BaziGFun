@@ -134,17 +134,19 @@ npm test               # 64 個單元測試（八宅引擎、方位幾何、版�
 npm run build          # 型別檢查 + 生產建置（dist/）+ Service Worker
 npm run preview        # 預覽含 SW 的正式版本（http://localhost:4173/BaziGFun/）
 
-# 以下三項是「真瀏覽器」自動化實測：先另開終端機執行 npm run dev（或 npm run preview），
+# 以下四項是「真瀏覽器」自動化實測：test:layout／sensor／camera 先啟動 npm run dev（或 preview）；
+# test:sw 須先 npm run build && npm run preview（它會修改 dist/sw.js 冒充更新，結束後還原）
 # 要測其他網址就加參數，例如  npm run test:layout -- --url=http://localhost:4173/BaziGFun/
 npm run test:layout    # 14 種視窗／摺疊情境 × 多種狀態的版面檢查（+ 截圖到 scripts/.cache/shots）
 npm run test:sensor    # 用 Chrome／Edge 的方向感測模擬驗證陀螺儀 → 方位 → 吉凶全鏈路
-npm run test:camera    # 相機串流與生命週期、拍照（JPEG／紀錄）、匯出 ZIP
+npm run test:camera    # 相機串流與生命週期、拍照（JPEG／紀錄）、照片詳情、匯出 ZIP
+npm run test:sw        # SW 更新流程：提示出現 → 點更新 → 新 SW 接管 → 重載 → 提示消失
 
 npm run fonts          # 重新產生內嵌字體子集（改了介面文字時執行）
 npm run icons          # 重新產生 PWA 圖示
 ```
 
-需要 Node.js 20+（建議 22/24）。`test:layout`／`test:sensor`／`test:camera` 另需本機安裝 Edge 或 Chrome（可用環境變數 `BROWSER_PATH` 指定路徑）。
+需要 Node.js 20+（建議 22/24）。`test:layout`／`test:sensor`／`test:camera`／`test:sw` 另需本機安裝 Edge 或 Chrome（可用環境變數 `BROWSER_PATH` 指定路徑）。
 
 **手機實機測試**
 
@@ -209,8 +211,9 @@ public/
 scripts/
   layout-check.mjs       # 真瀏覽器版面實測（視窗／摺疊模擬）
   sensor-check.mjs       # 真瀏覽器方向感測實測（DevTools 方向模擬）
-  camera-check.mjs       # 真瀏覽器相機／拍照／匯出實測
-  lib/test-browser.mjs   # 三支實測共用：找瀏覽器、穩定的假相機畫面、啟動參數
+  camera-check.mjs       # 真瀏覽器相機／拍照／詳情／匯出實測
+  sw-update-check.mjs    # 真瀏覽器 SW 更新流程實測（修改 dist/sw.js 冒充新版）
+  lib/test-browser.mjs   # 四支實測共用：找瀏覽器、穩定的假相機畫面、啟動參數
   subset-fonts.mjs       # 字體子集化
   gen-icons.mjs          # PWA 圖示產生
 ```
@@ -312,7 +315,7 @@ scripts/
 ## 離線 PWA 與隱私
 
 - `vite-plugin-pwa` `generateSW`：預先快取 App Shell、CSS、JS、圖示、內嵌字體與服務工作人員（15 個項目、約 390 KiB）。
-- 首次快取完成才提示離線可用；「有新版本可用」採非強制更新提示，避免舊 bundle 與新資料結構衝突。
+- 首次快取完成才提示離線可用；「有新版本可用」採非強制更新提示，避免舊 bundle 與新資料結構衝突。點整條提示（或「更新」鈕）會呼叫 `registerSW` 回傳的 `updateSW()` 送 `SKIP_WAITING` 給等待中的新 SW，新 SW 接管後自動重載——**不是只呼叫 `location.reload()`**（那樣新 SW 仍卡在 waiting，重載後還是舊版，提示會一直出現、看似「點了沒反應」）。摺疊雙螢幕時提示只置中在第一螢幕；此流程有 `npm run test:sw` 實測。
 - 離線可：選人物、算八宅、看本機照片、拍照、手動或可用感測羅盤、JSON＋照片匯出。
 - 不保證相機／感測器權限離線必然可取得，以裝置實測為準。
 - 無後端 API、無帳號、無第三方分析 SDK；相機影格、出生資料、照片不離開裝置。

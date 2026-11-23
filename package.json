@@ -13,7 +13,8 @@
     "fonts": "node scripts/subset-fonts.mjs",
     "test:layout": "node scripts/layout-check.mjs",
     "test:sensor": "node scripts/sensor-check.mjs",
-    "test:camera": "node scripts/camera-check.mjs"
+    "test:camera": "node scripts/camera-check.mjs",
+    "test:sw": "node scripts/sw-update-check.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",
