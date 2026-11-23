@@ -238,7 +238,7 @@ export const BaguaDial = memo(function BaguaDial({
       <circle cx={C} cy={C} r={R_RING} fill="none" stroke={GOLD} strokeOpacity={0.18} strokeWidth={12} />
       <circle cx={C} cy={C} r={R_RING} fill="none" stroke="url(#gold-ring)" strokeWidth={3.2} />
 
-      <g transform={`rotate(${f(rot)} ${C} ${C})`} opacity={dimmed ? 0.5 : 1}>
+      <g transform={`rotate(${f(rot)} ${C} ${C})`} opacity={dimmed ? 0.82 : 1}>
         <RingArt />
 
         {/* 八方扇區 */}
@@ -309,7 +309,7 @@ export const BaguaDial = memo(function BaguaDial({
       </g>
 
       {/* 文字層：不在旋轉群組內，座標直接算出，文字本身沒有 rotate 變換（保持銳利） */}
-      <g pointerEvents="none" opacity={dimmed ? 0.55 : 1}>
+      <g pointerEvents="none" opacity={dimmed ? 0.86 : 1}>
         {DEG_LABELS.map(({ d }) => {
           const [x, y] = polar(R_RING - 23, d - heading);
           return (

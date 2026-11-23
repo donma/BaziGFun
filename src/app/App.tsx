@@ -134,7 +134,8 @@ export default function App() {
   const kind: ViewKind = locked ? "locked" : manualMode ? "manual" : sensorLive ? "live" : sensorStale ? "stale" : "demo";
   const trusted = kind === "live" || kind === "manual" || kind === "locked";
   const degraded = kind === "live" && hs.tiltDegraded;
-  // 鏡頭朝天／地時水平朝向不可靠：盤面與數字凍結在最後一次有效方位（並明確標示），不跟著亂轉
+  // 鏡頭朝天／地時水平朝向不可靠：盤面與數字凍結在最後一次有效方位（並明確標示），不跟著亂轉。
+  // 視覺提示刻意保持低調：停用醒目紅字與紅色標籤，只留狀態列的小膠囊＋朝向卡的一行淡色短句。
   if (kind === "live" && !hs.tiltDegraded) lastGoodHeading.current = hs.displayHeading;
   const rawView = reading ? reading.heading : sensorStale ? (hs.displayHeading as number) : 0;
   const viewHeading = degraded && lastGoodHeading.current !== null ? lastGoodHeading.current : rawView;
@@ -551,7 +552,7 @@ export default function App() {
     if (kind === "manual") return { text: "手動", tone: "", title: "手動羅盤模式" };
     if (kind === "stale") return { text: "感測中斷", tone: "bad", title: "一段時間沒有方向資料，顯示的是最後讀數" };
     if (kind === "demo") return { text: "無感測", tone: "bad", title: "尚未取得方向感測資料" };
-    if (hs.tiltDegraded) return { text: "朝向不穩", tone: "warn", title: "鏡頭接近垂直，水平朝向不可靠" };
+    if (hs.tiltDegraded) return { text: "朝向不穩", tone: "", title: "鏡頭接近垂直，水平朝向不可靠，方位已凍結" };
     if (hs.semantic === "relative-euler") return { text: "需校正", tone: "warn", title: "此裝置只提供相對方位（不是絕對北），請先校正" };
     if (hs.quality === "uncertain") return { text: "感測弱", tone: "warn", title: "感測精度不足，建議離開金屬或電器並校正" };
     return { text: "感測✓", tone: "good", title: "方向感測正常（精度仍需實機標定）" };
@@ -560,7 +561,6 @@ export default function App() {
   const tags: Array<{ text: string; tone?: "bad" }> = [];
   if (kind === "demo") tags.push({ text: "示範方位・未取得感測" });
   if (kind === "stale") tags.push({ text: "最後讀數・感測中斷", tone: "bad" });
-  if (degraded) tags.push({ text: "最後有效方位", tone: "bad" });
   if (kind === "locked") tags.push({ text: "已鎖定" });
   if (kind === "manual") tags.push({ text: "手動" });
 
@@ -568,7 +568,8 @@ export default function App() {
   let desc: string;
   let cta: { text: string; onClick: () => void } | null = null;
   if (degraded) {
-    desc = "請將手機拿正，讓鏡頭對準水平方向。";
+    // 低調提示：不加紅字、不加紅標籤；凍結本身（羅盤不轉＋暫停判定膠囊）就是主要線索
+    desc = "方位已暫停，拿正手機即可恢復。";
   } else if (kind === "demo") {
     if (!caps.hasDeviceOrientation) {
       desc = "此裝置不支援方向感測，請用「切換羅盤」手動對準。";
@@ -588,14 +589,10 @@ export default function App() {
     desc = star ? STAR_DESC[star] : "";
   }
 
-  const warn = degraded
-    ? { text: "鏡頭接近垂直朝天／地，水平朝向不可靠，已暫停吉凶判定。", tone: "bad" as const }
-    : nearBoundary
-      ? { text: `接近方位交界（距邊界 ${boundaryDist.toFixed(1)}°），吉凶可能跳動。` }
-      : null;
+  const warn = nearBoundary ? { text: `接近方位交界（距邊界 ${boundaryDist.toFixed(1)}°），吉凶可能跳動。` } : null;
 
   const pill = degraded
-    ? { name: "暫停判定", sub: "", tone: "muted" as const, dim: false }
+    ? { name: "暫停判定", sub: "", tone: "muted" as const, dim: true }
     : star
       ? {
           name: STARS[star].name,

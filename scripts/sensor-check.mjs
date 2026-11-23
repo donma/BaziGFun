@@ -84,6 +84,7 @@ const read = () =>
     pill: document.querySelector(".star-pill")?.textContent?.replace(/\s+/g, "") ?? "",
     chip: document.querySelector(".status-strip .chip")?.textContent ?? "",
     warn: document.querySelector(".heading-warn")?.textContent ?? "",
+    desc: document.querySelector(".heading-desc")?.textContent?.replace(/\s+/g, "") ?? "",
     tags: Array.from(document.querySelectorAll(".heading-sub .tag")).map((t) => t.textContent),
   }));
 
@@ -103,10 +104,11 @@ for (const p of POSES) {
   await holdPose(p);
   const r = await read();
   if (p.degraded) {
-    const ok = r.pill.includes("暫停判定") && /朝天|垂直/.test(r.warn) && r.chip.includes("朝向不穩");
+    // 低調提示：檢查「暫停判定」膠囊＋朝向不穩晶片＋短說明，且不再出現紅色警告
+    const ok = r.pill.includes("暫停判定") && r.chip.includes("朝向不穩") && /暫停|拿正/.test(r.desc) && !r.warn;
     // 凍結在最後有效方位（不亂轉）
-    const frozenOk = lastGood === null || r.big.includes(lastGood.deg) || true;
-    line(ok && frozenOk, `${p.name}｜晶片「${r.chip}」、膠囊「${r.pill}」、警告「${r.warn.slice(0, 18)}」、顯示 ${r.big}`);
+    const frozenOk = lastGood === null || r.big.includes(String(lastGood.deg));
+    line(ok && frozenOk, `${p.name}｜晶片「${r.chip}」、膠囊「${r.pill}」、說明「${r.desc.slice(0, 18)}」、無紅字警告=${!r.warn}、顯示 ${r.big}（凍結 ${frozenOk ? "正確" : "失敗"}）`);
   } else {
     const m = /^(\d+)°(.+)$/.exec(r.big);
     const deg = m ? Number(m[1]) : NaN;
