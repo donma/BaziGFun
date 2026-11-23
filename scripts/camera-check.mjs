@@ -325,6 +325,34 @@ await withPage(async ({ page, cdp, errors }) => {
     savedPhoto = { id: photo.id, sha: sha(bytes) };
   }
 
+  /* ===================== C2) 照片詳情彈窗 ===================== */
+  section("C2 照片詳情（點縮圖／資料列放大原始照片＋資訊）");
+  await page.click('button[aria-label="紀錄與匯出"]');
+  await page.waitForSelector(".record-open:visible", { timeout: 10000 });
+  await page.waitForTimeout(300);
+  await page.locator(".record-open:visible").first().click();
+  await page.waitForSelector(".detail-modal", { timeout: 10000 });
+  await page.waitForTimeout(200);
+  const detail = await page.evaluate(() => {
+    const img = document.querySelector(".detail-photo");
+    const box = document.querySelector(".detail-modal")?.getBoundingClientRect();
+    return {
+      title: document.querySelector(".detail-modal h2")?.textContent ?? "",
+      natural: img ? { w: img.naturalWidth, h: img.naturalHeight } : null,
+      // 顯示尺寸必須明顯大於 56px 縮圖（代表放大的是原始照片而非縮圖）
+      displayW: img ? Math.round(img.getBoundingClientRect().width) : 0,
+      rows: Array.from(document.querySelectorAll(".detail-info-row")).map((r) => r.textContent?.replace(/\s+/g, "") ?? ""),
+      inViewport: !!box && box.x >= -1 && box.y >= -1 && box.right <= innerWidth + 1 && box.bottom <= innerHeight + 1,
+    };
+  });
+  line(!!detail.natural && detail.natural.w > 100 && detail.displayW > 100, `放大的是原始照片：原始 ${detail.natural?.w}×${detail.natural?.h}、顯示寬 ${detail.displayW}px（> 56px 縮圖）`);
+  line(detail.title.includes("伏位") && detail.rows.some((r) => r.includes("315°")) && detail.rows.some((r) => r.includes("磁北")), `詳情資訊完整：標題「${detail.title}」、${detail.rows.length} 列（方位／吉凶／時間／來源／北向基準／可信度）`);
+  line(detail.inViewport, "詳情窗完整落在視窗內");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  line((await page.locator(".detail-modal").count()) === 0, "Esc 可關閉詳情窗");
+  writeFileSync(path.join(OUT, "camera-detail.png"), await page.screenshot());
+
   /* ===================== D) 匯出 ===================== */
   section("D 匯出 ZIP（右上漢堡 → 紀錄 → 匯出 ZIP）");
   await page.click('button[aria-label="紀錄與匯出"]');

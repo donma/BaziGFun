@@ -211,6 +211,29 @@
   background: var(--c-cream-2);
 }
 
+/* 縮圖與資料列可點：放大查看原始照片＋詳情 */
+.record-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.record-open .list-main {
+  cursor: pointer;
+}
+
+.record-open:active .thumb {
+  opacity: 0.75;
+}
+
 .hint {
   margin: 0 0 10px;
   font-size: 12px;
@@ -251,6 +274,92 @@
   font-size: 14px;
   line-height: 1.7;
   color: var(--c-ink-soft);
+}
+
+/* ---------- 照片詳情（點紀錄縮圖／資料列） ---------- */
+
+.detail-modal {
+  max-width: 520px;
+  /* 詳細資訊＋照片可能超過一螢幕：讓內容可捲，但不超過浮層可用高度 */
+  max-height: calc(100vh - 40px - var(--seg-pad-bottom, 0px));
+  padding: 16px 18px 18px;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-head h2 {
+  margin: 0;
+}
+
+/* 在淺色面板上覆寫深色畫面用的 icon-btn 顏色 */
+.detail-close.icon-btn {
+  flex: 0 0 44px;
+  color: var(--c-ink);
+}
+
+.detail-photo-wrap {
+  margin: 12px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 80px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(60, 48, 28, 0.08);
+}
+
+/* 原始照片完整呈現（不裁切）：最長邊不超過浮層，保留原始比例 */
+.detail-photo {
+  display: block;
+  max-width: 100%;
+  max-height: min(56vh, 460px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.detail-info {
+  margin: 0 0 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 14px;
+}
+
+.detail-info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(176, 141, 79, 0.1);
+}
+
+.detail-info-row dt {
+  font-size: 11px;
+  color: var(--c-ink-soft);
+}
+
+.detail-info-row dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.detail-actions .btn {
+  flex: 1;
 }
 
 .field {

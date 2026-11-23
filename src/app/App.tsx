@@ -86,6 +86,7 @@ export default function App() {
   const [pendingCapture, setPendingCapture] = useState(false);
   const [records, setRecords] = useState<PhotoRecordMeta[]>([]);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
+  const [detailPhotoId, setDetailPhotoId] = useState<string | null>(null);
   const [camStatus, setCamStatus] = useState<"idle" | "running" | "denied" | "failed" | "ended">("idle");
 
   const camRef = useRef<CameraManager | null>(null);
@@ -363,18 +364,19 @@ export default function App() {
 
   /* ---------- 操作 ---------- */
 
-  // 鍵盤 Esc 關閉抽屜／校正視窗
+  // 鍵盤 Esc 關閉抽屜／校正／照片詳情
   useEffect(() => {
-    if (!drawerOpen && !showCalibration) return;
+    if (!drawerOpen && !showCalibration && !detailPhotoId) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setDrawerOpen(false);
         setShowCalibration(false);
+        setDetailPhotoId(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawerOpen, showCalibration]);
+  }, [drawerOpen, showCalibration, detailPhotoId]);
   const openPanel = useCallback((tab: PanelTab) => {
     setPanelTab(tab);
     // 有常駐面板（寬螢幕／摺疊雙螢幕）時只需切換分頁；不要把（看不見的）抽屜標成開啟，
@@ -653,6 +655,7 @@ export default function App() {
       onExportJson={doExportJson}
       onExportOne={doExportOne}
       onDeleteRecord={deleteRecordAndPhoto}
+      onOpenPhoto={setDetailPhotoId}
     />
   );
 
@@ -791,6 +794,21 @@ export default function App() {
         {sidePanel}
       </div>
 
+      {detailPhotoId && (
+        <PhotoDetailModal
+          photoId={detailPhotoId}
+          record={records.find((r) => r.photoId === detailPhotoId) ?? null}
+          photoUrl={photoUrls[detailPhotoId] ?? null}
+          onClose={() => setDetailPhotoId(null)}
+          onShare={() => doExportOne(detailPhotoId)}
+          onDelete={() => {
+            const rec = records.find((r) => r.photoId === detailPhotoId);
+            if (rec) deleteRecordAndPhoto(rec.id);
+            setDetailPhotoId(null);
+          }}
+        />
+      )}
+
       {showCalibration && (
         <div className="modal-backdrop" onClick={() => setShowCalibration(false)}>
           <div className="modal glass glass-strong" onClick={(e) => e.stopPropagation()}>
@@ -837,6 +855,80 @@ export default function App() {
       {/* 給螢幕閱讀器：只在扇區改變時播報 */}
       <div className="visually-hidden" role="status" aria-live="polite">
         {trusted && star && palace ? `${palace.branch}方 ${STARS[star].name} ${isGoodStar(star) ? "吉方" : "凶方"}` : ""}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 照片詳情：點紀錄縮圖／資料列時放大顯示「原始拍照的圖片」（用同一個 blob 的 object URL，
+ * 不是 56px 縮圖），並列出該筆量測的完整資訊。modal-backdrop 已處理摺疊雙螢幕不跨鉸鏈。
+ */
+function PhotoDetailModal({
+  photoId,
+  record,
+  photoUrl,
+  onClose,
+  onShare,
+  onDelete,
+}: {
+  photoId: string;
+  record: PhotoRecordMeta | null;
+  photoUrl: string | null;
+  onClose: () => void;
+  onShare: () => void;
+  onDelete: () => void;
+}) {
+  const star = record ? STARS[record.star as StarKey] : undefined;
+  const good = star ? star.luck === "good" : false;
+  const rows: Array<[string, string]> = record
+    ? [
+        ["方位", `${Math.round(record.azimuthDisplay)}° ${record.palace}`],
+        ["吉凶", star ? `${star.name}（${good ? "吉方" : "凶方"}）` : record.star],
+        ["時間", new Date(record.capturedAt).toLocaleString()],
+        ["來源", record.source === "manual" ? "手動羅盤" : "方向感測"],
+        ["北向基準", record.northReference === "true" ? "真北" : "磁北"],
+        ["可信度", record.quality === "valid" ? "良好" : record.quality === "uncertain" ? "需校正／不確定" : "無法判定"],
+        ...(record.nearBoundary ? ([["方位交界", "接近交界（吉凶可能跳動）"]] as Array<[string, string]>) : []),
+      ]
+    : [];
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div className="modal detail-modal glass glass-strong" role="dialog" aria-modal="true" aria-label="照片詳情" onClick={(e) => e.stopPropagation()}>
+        <div className="detail-head">
+          <h2>{record?.title ?? "照片詳情"}</h2>
+          <button type="button" className="icon-btn detail-close" aria-label="關閉" onClick={onClose}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+            </svg>
+          </button>
+        </div>
+        <div className="detail-photo-wrap">
+          {photoUrl ? (
+            <img className="detail-photo" src={photoUrl} alt={record?.title ?? "拍照記錄"} />
+          ) : (
+            <p className="hint">照片讀取中或已不存在（{photoId.slice(0, 8)}…）</p>
+          )}
+        </div>
+        {rows.length > 0 && (
+          <dl className="detail-info">
+            {rows.map(([k, v]) => (
+              <div key={k} className="detail-info-row">
+                <dt>{k}</dt>
+                <dd>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        <div className="detail-actions">
+          <button type="button" className="btn" onClick={onShare}>
+            分享照片
+          </button>
+          <button type="button" className="btn" onClick={onDelete}>
+            刪除這筆
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -29,6 +29,7 @@ export interface SidePanelProps {
   onExportJson: () => void;
   onExportOne: (photoId: string) => void;
   onDeleteRecord: (id: string) => void;
+  onOpenPhoto: (photoId: string) => void;
 }
 
 const TABS: Array<[PanelTab, string]> = [
@@ -76,6 +77,7 @@ export function SidePanel(p: SidePanelProps) {
           onExportJson={p.onExportJson}
           onExportOne={p.onExportOne}
           onDelete={p.onDeleteRecord}
+          onOpenPhoto={p.onOpenPhoto}
         />
       )}
     </div>
@@ -209,6 +211,7 @@ function RecordsPanel({
   onExportJson,
   onExportOne,
   onDelete,
+  onOpenPhoto,
 }: {
   records: PhotoRecordMeta[];
   photoUrls: Record<string, string>;
@@ -216,6 +219,7 @@ function RecordsPanel({
   onExportJson: () => void;
   onExportOne: (photoId: string) => void;
   onDelete: (id: string) => void;
+  onOpenPhoto: (photoId: string) => void;
 }) {
   return (
     <div>
@@ -233,18 +237,25 @@ function RecordsPanel({
         const star = STARS[r.star as StarKey];
         return (
           <div key={r.id} className="glass list-card">
-            {photoUrls[r.photoId] ? (
-              <img className="thumb" src={photoUrls[r.photoId]} alt={r.title} />
-            ) : (
-              <div className="thumb" />
-            )}
-            <div className="list-main" style={{ cursor: "default" }}>
-              <div className="list-title">{r.title}</div>
-              <div className="list-sub">
-                {new Date(r.capturedAt).toLocaleString()}・{Math.round(r.azimuthDisplay)}°・{r.palace}・
-                <span className={star ? `star-${star.luck}` : undefined}>{star?.name ?? r.star}</span>
+            <button
+              type="button"
+              className="record-open"
+              aria-label={`查看${r.title}的完整照片與詳情`}
+              onClick={() => onOpenPhoto(r.photoId)}
+            >
+              {photoUrls[r.photoId] ? (
+                <img className="thumb" src={photoUrls[r.photoId]} alt={r.title} />
+              ) : (
+                <div className="thumb" />
+              )}
+              <div className="list-main">
+                <div className="list-title">{r.title}</div>
+                <div className="list-sub">
+                  {new Date(r.capturedAt).toLocaleString()}・{Math.round(r.azimuthDisplay)}°・{r.palace}・
+                  <span className={star ? `star-${star.luck}` : undefined}>{star?.name ?? r.star}</span>
+                </div>
               </div>
-            </div>
+            </button>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <button className="btn mini-btn" onClick={() => onExportOne(r.photoId)}>
                 分享
